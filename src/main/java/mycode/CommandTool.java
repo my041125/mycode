@@ -1,11 +1,13 @@
 package mycode;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +57,9 @@ public class CommandTool implements Tool {
                 1. 改完代码后应该主动用它验证（例如 mvn compile、mvn test），不要假设改对了；
                 2. 一次只跑一条命令，不要用 && 串一长串；
                 3. 危险命令（删除、格式化、强制推送等）会被直接拒绝，不要尝试绕过；
-                4. 命令默认 30 秒超时，安装依赖这类耗时操作请显式传 timeoutSeconds。
+                4. 命令默认 30 秒超时，安装依赖这类耗时操作请显式传 timeoutSeconds；
+                5. 项目根目录如果有 .venv，python 会自动指向其中的解释器（技能依赖装在那里），
+                   所以直接写 python xxx.py 就行，不用拼绝对路径。
                 """;
     }
 
@@ -86,10 +90,22 @@ public class CommandTool implements Tool {
                 : List.of("sh", "-c", command);
 
         long start = System.currentTimeMillis();
-        Process process = new ProcessBuilder(cmdline)
+        ProcessBuilder pb = new ProcessBuilder(cmdline)
                 .directory(workDir.toFile())
-                .redirectErrorStream(true)   // stderr 合并进 stdout，模型不用分开看
-                .start();
+                .redirectErrorStream(true);   // stderr 合并进 stdout，模型不用分开看
+
+        // 项目里有虚拟环境就优先用它。
+        // 技能脚本的依赖装在这里（.venv），不能让它们去污染全局 Python，
+        // 但模型只会写 `python xxx.py`，所以只能靠 PATH 顺序把它顶到前面。
+        Path venvBin = workDir.resolve(windows ? ".venv/Scripts" : ".venv/bin");
+        if (Files.isDirectory(venvBin)) {
+            String path = pb.environment().getOrDefault("PATH", "");
+            pb.environment().put("PATH", venvBin + File.pathSeparator + path);
+        }
+        // Python 默认按系统编码输出，Windows 下是 GBK，中文会乱码
+        pb.environment().put("PYTHONIOENCODING", "utf-8");
+
+        Process process = pb.start();
 
         // 用两个线程分别读流和等待，避免「进程写满缓冲区阻塞」的经典死锁。
         //
