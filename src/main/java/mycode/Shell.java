@@ -43,7 +43,8 @@ public class Shell {
     /**
      * 运行期依赖。/lang 切换语言时要重建 agent，所以这些引用得留着。
      */
-    private record Runtime(LlmClient llm, ToolRegistry tools, PermissionMode mode, BufferedReader stdin) {
+    private record Runtime(LlmClient llm, ToolRegistry tools, PermissionMode mode,
+                           BufferedReader stdin, SkillRegistry skills) {
     }
 
     /**
@@ -87,9 +88,12 @@ public class Shell {
         boolean demo = List.of(args).contains("--demo");
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
 
-        ToolRegistry tools = buildTools(root);
         LlmClient llm = demo ? demoModel() : LlmFactory.create(args);
         PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
+
+        // 技能要先扫描，因为工具注册和 system 提示词都依赖它
+        SkillRegistry skills = SkillRegistry.discover(root);
+        ToolRegistry tools = buildTools(root, skills);
 
         // 整个会话共用同一个输入流：REPL 读指令，权限确认也读它，
         // 分开建会导致缓冲区里的内容错乱
@@ -100,11 +104,11 @@ public class Shell {
         // 管道/重定向场景下 stdin 里是脚本内容，确认器一读就会把下一条指令吃掉，
         // 所以此时传 null，让 PermissionHook 走「非交互一律拒绝」的分支
         boolean tty = System.console() != null;
-        Runtime rt = new Runtime(llm, tools, mode, tty ? stdin : null);
+        Runtime rt = new Runtime(llm, tools, mode, tty ? stdin : null, skills);
         lastRuntime = rt;   // /lang 重建 agent 时要用
 
         SessionHolder holder = new SessionHolder(new ChatSession(buildAgent(rt)));
-        printBanner(demo, args, tools, root, mode);
+        printBanner(demo, args, tools, root, mode, skills);
         repl(holder, rt, root, stdin);
     }
 
@@ -121,9 +125,10 @@ public class Shell {
         startupArgs = args;
         lang = Language.fromArgs(args);
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        ToolRegistry tools = buildTools(root);
+        SkillRegistry skills = SkillRegistry.discover(root);
+        ToolRegistry tools = buildTools(root, skills);
         PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
-        Runtime rt = new Runtime(LlmFactory.create(args), tools, mode, null);
+        Runtime rt = new Runtime(LlmFactory.create(args), tools, mode, null, skills);
         lastRuntime = rt;
 
         ChatSession session = new ChatSession(buildAgent(rt));
@@ -170,7 +175,7 @@ public class Shell {
 
             // 斜杠命令在本地处理，不进模型，省 token 也更可靠
             if (input.startsWith("/")) {
-                if (!handleCommand(input, holder, rt.tools(), root, rt.mode())) return;
+                if (!handleCommand(input, holder, rt, root)) return;
                 continue;
             }
 
@@ -206,10 +211,11 @@ public class Shell {
      *
      * @return false 表示要退出会话
      */
-    private static boolean handleCommand(String input, SessionHolder holder,
-                                         ToolRegistry tools, Path root, PermissionMode mode) {
+    private static boolean handleCommand(String input, SessionHolder holder, Runtime rt, Path root) {
         String cmd = input.split("\\s+")[0].toLowerCase();
         ChatSession session = holder.session;
+        ToolRegistry tools = rt.tools();
+        PermissionMode mode = rt.mode();
         switch (cmd) {
             case "/exit", "/quit", "/q" -> {
                 System.out.println("再见。本次共 " + session.turns() + " 轮，"
@@ -231,6 +237,7 @@ public class Shell {
                 }
             }
             case "/files" -> listFiles(root);
+            case "/skills" -> listSkills(rt.skills());
             case "/model" -> printModel();
             case "/permission" -> System.out.printf("当前权限模式：%s（%s）%n", mode.cli, mode.label);
             case "/cost" -> printCost(session);
@@ -370,6 +377,26 @@ public class Shell {
         }
     }
 
+    /** /skills：列出已加载的技能，并说明它们从哪来 */
+    private static void listSkills(SkillRegistry skills) {
+        List<Skill> all = skills.all();
+        if (all.isEmpty()) {
+            System.out.println("没有发现任何技能。");
+            System.out.println("把技能放到下列任一目录即可（每个技能一个子目录，内含 SKILL.md）：");
+            System.out.println("  项目：<当前目录>/.mycode/skills/");
+            System.out.println("  共用：<当前目录>/.claude/skills/");
+            System.out.println("  个人：~/.claude/skills/   ← Claude Code 的技能默认在这里");
+            return;
+        }
+        System.out.println("已加载 " + all.size() + " 个技能（模型会按需加载，不用你手动挑）：");
+        for (Skill s : all) {
+            String desc = s.description().replace("\n", " ");
+            if (desc.length() > 46) desc = desc.substring(0, 46) + "…";
+            System.out.printf("  %-12s [%s] %s%n", s.name(), s.source(), desc);
+        }
+        System.out.println("提示：直接说「用 docx 技能做一个 Word 文档」，模型就会调用 use_skill 加载它。");
+    }
+
     /** 列出当前项目里的代码文件，最多 30 个，避免刷屏 */
     private static void listFiles(Path root) {
         try (Stream<Path> walk = Files.walk(root, 8)) {
@@ -446,6 +473,7 @@ public class Shell {
                   /help        显示本帮助
                   /clear       清空上下文，开始新会话
                   /tools       查看已加载的工具
+                  /skills      查看已加载的技能（Word/Excel/PPT 等）
                   /files       列出当前项目的代码文件
                   /model       查看当前模型配置
                   /permission  查看当前权限模式
@@ -483,7 +511,7 @@ public class Shell {
     // ---------------- 启动横幅 ----------------
 
     private static void printBanner(boolean demo, String[] args, ToolRegistry tools,
-                                    Path root, PermissionMode mode) {
+                                    Path root, PermissionMode mode, SkillRegistry skills) {
         String model;
         if (demo) {
             model = "离线演示模型（脚本化，不联网）";
@@ -506,6 +534,7 @@ public class Shell {
         System.out.println("  " + "-".repeat(52));
         System.out.println("  模型   " + model);
         System.out.println("  工具   " + tools.all().size() + " 个");
+        System.out.println("  技能   " + (skills.size() == 0 ? "未发现（/skills 看说明）" : skills.size() + " 个"));
         System.out.println("  权限   " + mode.cli + "（" + mode.label + "）");
         System.out.println("  语言   " + lang.label + "（/lang 可切换）");
         System.out.println("  目录   " + root);
@@ -534,7 +563,8 @@ public class Shell {
         return Agent.builder("mycode")
                 .llm(rt.llm())
                 .tools(rt.tools())
-                .systemPrompt(SYSTEM_PROMPT + "\n" + lang.hint)
+                // 技能清单拼在语言约束之前，作为能力说明的一部分
+                .systemPrompt(SYSTEM_PROMPT + rt.skills().catalog() + "\n" + lang.hint)
                 .hooks(new ConsoleHook(), PermissionHook.forMode(rt.mode(), rt.stdin()))
                 .maxSteps(12)
                 // --no-compress 关掉自动压缩，退回「删最老消息」的旧策略（用于对比效果）
@@ -547,13 +577,17 @@ public class Shell {
      *
      * 搜索工具只在配了密钥时才挂上 —— 命令行工具不该因为缺一个可选功能就启动失败。
      */
-    private static ToolRegistry buildTools(Path root) {
+    private static ToolRegistry buildTools(Path root, SkillRegistry skills) {
         ToolRegistry tools = new ToolRegistry()
                 .register(CodeTools.listTool(root))
                 .register(CodeTools.readTool(root))
                 .register(new CodeEditTool(root))
                 .register(new CommandTool(root));   // 编译、跑测试，闭环的关键
 
+        // 有技能才注册 use_skill，没技能时少一个工具少一份提示词开销
+        if (skills.size() > 0) {
+            tools.register(new SkillTool(skills));
+        }
         String bocha = System.getenv("BOCHA_API_KEY");
         String tavily = System.getenv("TAVILY_API_KEY");
         if (bocha != null && !bocha.isBlank()) {

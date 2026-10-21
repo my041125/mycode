@@ -175,8 +175,12 @@ public class Main {
                   mycode "问题或指令"               单次执行，跑完退出
                   mycode --demo                   离线演示（用假模型，不花钱）
 
+                技能（兼容 Claude Code 的 Agent Skills，直接读 ~/.claude/skills）：
+                  把技能目录放到 <项目>/.mycode/skills/ 或 ~/.claude/skills/ 即可
+                  用 /skills 查看已加载的技能；agent.properties 里 skills= 控制启用哪些
+
                 交互模式里的斜杠命令：
-                  /help  /clear  /tools  /files  /model  /permission  /lang  /cost  /compress  /undo  /history  /exit
+                  /help  /clear  /tools  /skills  /files  /model  /permission  /lang  /cost  /compress  /undo  /history  /exit
 
                 【权限】决定 agent 能做什么，默认 edit
                   mycode --permission=read-only   只读：不能改文件、不能执行命令
