@@ -22,14 +22,32 @@ public class AgentContext {
     /** 消息列表。每条消息是一个 Map，键值遵循 OpenAI 协议（role / content / tool_calls / tool_call_id） */
     private final List<Map<String, Object>> messages = new ArrayList<>();
 
+    /** 原始 system 提示词（含工具清单）。压缩摘要会拼在它后面，所以原始内容要单独留着 */
+    private final String systemBase;
+
+    /** 历史对话的滚动摘要。每次压缩都会用它覆盖，保证 system 里只有一段摘要而不是越叠越长 */
+    private String summary = "";
+
+    private AgentContext(String systemBase) {
+        this.systemBase = systemBase;
+        this.messages.add(systemMessage());
+    }
+
     /**
      * 创建上下文，第一条消息是 system。
      * 注意 system 只能是第一条，且只能有一条 —— 多转发给部分厂商会报错。
      */
     public static AgentContext of(String systemPrompt) {
-        AgentContext ctx = new AgentContext();
-        ctx.messages.add(Map.of("role", "system", "content", systemPrompt));
-        return ctx;
+        return new AgentContext(systemPrompt);
+    }
+
+    /** 按「原始 system + 当前摘要」生成 system 消息 */
+    private Map<String, Object> systemMessage() {
+        String text = summary.isBlank()
+                ? systemBase
+                : systemBase + "\n\n【此前对话摘要】\n" + summary
+                + "\n（以上是更早对话的压缩摘要，细节可能有丢失，需要时请重新查证。）";
+        return Map.of("role", "system", "content", text);
     }
 
     /** 追加一条用户消息 */
@@ -88,6 +106,86 @@ public class AgentContext {
         return messages;
     }
 
+    /** 消息条数（含 system），压缩器判断「还能不能继续摘」时会用 */
+    public int size() {
+        return messages.size();
+    }
+
+    /** 当前滚动摘要，可能为空字符串 */
+    public String summary() {
+        return summary;
+    }
+
+    /**
+     * 覆盖历史摘要，并立刻重建 system 消息。
+     *
+     * 为什么不是「再插一条摘要消息」：那样每压缩一次就多一条，
+     * 上下文还是会膨胀。改成覆盖 system 里的固定段落，摘要永远只占一份。
+     */
+    public void setSummary(String newSummary) {
+        this.summary = newSummary == null ? "" : newSummary.strip();
+        if (messages.isEmpty()) {
+            messages.add(systemMessage());
+        } else {
+            messages.set(0, systemMessage());
+        }
+    }
+
+    /**
+     * 摘掉最老的一轮对话，返回被摘掉的消息（交给摘要器处理）。
+     *
+     * 一轮 = 从一条 user 消息开始，到下一个 user 消息之前的所有消息，
+     * 中间可能夹着 assistant 的 tool_calls 和若干条 tool 结果。
+     * 必须整轮摘：只删其中一条会出现「assistant 说要调工具、tool 结果却没了」的协议违规，
+     * 大部分厂商会直接返回 400。
+     *
+     * @param keepRecent 至少保留最近多少条消息（保护当前任务的上下文）
+     */
+    public List<Map<String, Object>> drainOldestRound(int keepRecent) {
+        int size = messages.size();
+        if (size <= 1 + keepRecent) return List.of();
+        // 允许摘到的最右位置（含）：保留它及其之后的 keepRecent 条
+        int limit = size - keepRecent;
+
+        // 情况一：后面还有新一轮 user —— 把从 index 1 到下一个 user 之前整段摘掉。
+        // 从 2 开始扫：index 1 自己就是本轮起点，从 1 开始会立刻命中自己（踩过一次的 off-by-one）
+        for (int i = 2; i <= limit; i++) {
+            if ("user".equals(messages.get(i).get("role"))) {
+                return removeRange(1, i);
+            }
+        }
+
+        // 情况二：只有一轮对话（典型场景：一次提问、连续多次工具调用）。
+        // 这种长任务里没有「下一个 user」当边界，但早期那几组
+        // assistant(tool_calls)+tool 结果同样可以摘掉 —— 只要保住用户指令和最末几条。
+        //
+        // 起点从 index 1 扫：如果 user 已经被 trim 掉，第一组 assistant 就在 1 号位；
+        // 因为只匹配 assistant，所以不会误删 user 指令本身。
+        int start = -1;
+        for (int i = 1; i <= limit; i++) {
+            if ("assistant".equals(messages.get(i).get("role"))) {
+                start = i;
+                break;
+            }
+        }
+        if (start < 0) return List.of();
+        // 整组摘：从这组 assistant 开始，直到下一个 assistant 或 user 之前
+        for (int i = start + 1; i <= limit; i++) {
+            String role = String.valueOf(messages.get(i).get("role"));
+            if ("assistant".equals(role) || "user".equals(role)) {
+                return removeRange(start, i);
+            }
+        }
+        return List.of();
+    }
+
+    /** 摘掉 [from, to) 区间并返回，供压缩器做摘要 */
+    private List<Map<String, Object>> removeRange(int from, int to) {
+        List<Map<String, Object>> removed = new ArrayList<>(messages.subList(from, to));
+        messages.subList(from, to).clear();
+        return removed;
+    }
+
     /**
      * 粗略估算上下文长度。
      * 中文一个字约等于 1 token，英文约 4 字符 1 token，这里统一按字符数估，够用就行。
@@ -121,12 +219,26 @@ public class AgentContext {
      */
     public void trim(int maxTokens) {
         while (estimateTokens() > maxTokens && messages.size() > 3) {
+            // 最后一条 user 指令就是任务本身，绝不能删 ——
+            // 删了模型就不知道自己在干什么，会出现「答非所问」这种最难排查的表现
+            if ("user".equals(messages.get(1).get("role")) && countRole("user") <= 1) {
+                break;
+            }
             messages.remove(1);
             // 如果下一条是 tool 消息，它的发起方已经被删了，一并删掉避免孤儿消息导致 400
             while (messages.size() > 3 && "tool".equals(messages.get(1).get("role"))) {
                 messages.remove(1);
             }
         }
+    }
+
+    /** 统计某个角色的消息条数，trim 的保护逻辑要用 */
+    private long countRole(String role) {
+        long n = 0;
+        for (Map<String, Object> m : messages) {
+            if (role.equals(m.get("role"))) n++;
+        }
+        return n;
     }
 
     /** 调试用：把上下文按 role 逐条打印出来，每行截到 100 字 */

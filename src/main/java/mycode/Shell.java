@@ -206,6 +206,7 @@ public class Shell {
             case "/model" -> printModel();
             case "/permission" -> System.out.printf("当前权限模式：%s（%s）%n", mode.cli, mode.label);
             case "/cost" -> printCost(session);
+            case "/compress" -> compress(session);
             case "/undo" -> undo(root, input);
             case "/history" -> history(root);
             default -> System.out.println("未知命令: " + cmd + "，输入 /help 查看可用命令。");
@@ -268,6 +269,31 @@ public class Shell {
                 + " " + stamp.substring(9, 11) + ":" + stamp.substring(11, 13) + ":" + stamp.substring(13, 15);
     }
 
+    /**
+     * /compress：手动压缩一次上下文。
+     *
+     * 自动压缩在每轮开始前按阈值触发，这个命令用于「还没到阈值但我想提前瘦身」，
+     * 也方便观察压缩到底做了什么。
+     */
+    private static void compress(ChatSession session) {
+        int before = session.contextChars();
+        try {
+            ContextCompressor.Stats stats = session.compressNow();
+            if (stats.removedMessages() == 0) {
+                System.out.printf("当前上下文约 %d 字，还没到需要压缩的程度（阈值 %d 字）。%n",
+                        before, session.compressThreshold());
+                return;
+            }
+            System.out.printf("已压缩：移除 %d 条消息（%d 轮），约 %d 字 → %d 字%n",
+                    stats.removedMessages(), stats.removedRounds(), before, session.contextChars());
+            System.out.println("摘要方式：" + (stats.usedModel() ? "模型生成" : "机械兜底（模型摘要不可用）"));
+            System.out.println("新的历史摘要：");
+            System.out.println("  " + session.summary().replace("\n", "\n  "));
+        } catch (Exception e) {
+            System.out.println("压缩失败: " + e.getMessage());
+        }
+    }
+
     /** 用量与耗时汇总。配了价格才显示金额，否则只报 token */
     private static void printCost(ChatSession session) {        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
         System.out.println("上下文   : 约 " + session.contextChars() + " 字");
@@ -327,6 +353,7 @@ public class Shell {
                   /model       查看当前模型配置
                   /permission  查看当前权限模式
                   /cost        查看 token 用量与耗时
+                  /compress    手动压缩一次上下文（自动压缩默认已开启）
                   /undo        撤销最近一次文件修改（/undo 路径 指定文件）
                   /history     查看最近几次修改前的快照
                   /exit        退出（同 Ctrl+D）
@@ -334,6 +361,11 @@ public class Shell {
                 快照说明：
                   每次改文件前都会在 .mycode/backups/ 下存一份，每个文件保留最近 20 个版本，
                   所以连改多次也能一层层退回去。语法校验失败的修改会被自动回滚，不占版本。
+
+                记忆压缩说明：
+                  上下文超过阈值（默认 70%）时，最老的几轮对话会被压成一段摘要放进 system，
+                  而不是直接删掉 —— 这样任务意图和已确认的约束能留下来。
+                  压缩发生在后台，界面会提示「⇣ 上下文已压缩」。用 --no-compress 可关闭。
 
                 权限模式（启动参数 --permission=）：
                   read-only    只读，不能改文件也不能执行命令
@@ -398,6 +430,8 @@ public class Shell {
                 .systemPrompt(SYSTEM_PROMPT)
                 .hooks(new ConsoleHook(), PermissionHook.forMode(mode, stdin))
                 .maxSteps(12)
+                // --no-compress 关掉自动压缩，退回「删最老消息」的旧策略（用于对比效果）
+                .compressionEnabled(!List.of(startupArgs).contains("--no-compress"))
                 .build();
     }
 

@@ -67,6 +67,13 @@ public class ConsoleHook implements Hook {
         System.out.println("    ⎿  " + first);
     }
 
+    /** 压缩发生时明确告诉用户：记忆被改写了，别让它悄悄发生 */
+    @Override
+    public void onContextCompressed(int removedMessages, int savedChars, String summary) {
+        clearSpinner();
+        System.out.printf("  ⇣ 上下文已压缩：移除 %d 条消息，省下约 %d 字%n", removedMessages, savedChars);
+    }
+
     /** 把参数渲染成 键="值" 一行，超长就截断并加省略号 */
     private String renderArgs(Map<String, Object> args) {
         if (args == null || args.isEmpty()) return "";

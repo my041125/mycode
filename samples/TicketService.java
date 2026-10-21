@@ -9,7 +9,8 @@ public class TicketService {
      * 计算门票总价。
      */
     public double total(double basePrice, int adults, int children) {
-        // 目前只按成人计算，儿童未计入
-        return basePrice * adults;
+        // 儿童按成人价的一半计入
+        double childPrice = basePrice * 0.5;
+        return basePrice * adults + childPrice * children;
     }
 }

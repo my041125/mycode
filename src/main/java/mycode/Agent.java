@@ -43,6 +43,15 @@ public class Agent {
     /** 最近一次 run 累计消耗的 token（可能跨多轮工具调用），供会话做成本统计 */
     private Usage lastRunUsage = Usage.ZERO;
 
+    /** 是否启用上下文压缩（关掉就退回「删最老消息」的粗暴策略） */
+    private final boolean compressionEnabled;
+
+    /** 压缩触发比例：上下文超过 maxContextTokens × 该值就开始压缩 */
+    private final double compressRatio;
+
+    /** 压缩时至少保留最近多少条消息，保护当前任务的上下文 */
+    private final int compressKeep;
+
     private Agent(Builder b) {
         this.name = b.name;
         this.llm = b.llm;
@@ -52,6 +61,9 @@ public class Agent {
         this.maxSteps = b.maxSteps;
         this.maxToolOutputChars = b.maxToolOutputChars;
         this.maxContextTokens = b.maxContextTokens;
+        this.compressionEnabled = b.compressionEnabled;
+        this.compressRatio = b.compressRatio;
+        this.compressKeep = b.compressKeep;
     }
 
     /**
@@ -103,7 +115,9 @@ public class Agent {
         lastRunUsage = Usage.ZERO;
 
         for (int step = 1; step <= maxSteps; step++) {
-            // 每轮开始先裁剪上下文，避免越滚越大最终超出模型窗口
+            // 每轮开始先处理上下文膨胀：
+            // 优先「压缩成摘要」，压完还超限才走 trim 丢弃（最后兜底）
+            maybeCompress(ctx);
             ctx.trim(maxContextTokens);
             hooks.forEach(h -> h.beforeLlm(ctx));
 
@@ -163,6 +177,47 @@ public class Agent {
         return lastRunUsage;
     }
 
+    /**
+     * 上下文超阈值时执行压缩。
+     *
+     * 注意压缩本身要调一次模型，所以只在真正超限时才做 ——
+     * 每轮都压会让成本和延迟都翻倍。
+     */
+    private void maybeCompress(AgentContext ctx) {
+        if (!compressionEnabled) return;
+        int target = (int) (maxContextTokens * compressRatio);
+        if (ctx.estimateTokens() <= target) return;
+
+        ContextCompressor.Stats stats = ContextCompressor.compress(ctx, llm, target, compressKeep);
+        if (stats.removedMessages() == 0) return;
+
+        // 摘要调用也花钱，算进本次任务成本
+        lastRunUsage = lastRunUsage.plus(stats.usage());
+        hooks.forEach(h -> h.onContextCompressed(
+                stats.removedMessages(), stats.savedChars(), ctx.summary()));
+    }
+
+    /**
+     * 立即压缩一次（供 /compress 命令手动触发）。
+     *
+     * @return 压缩统计；没到阈值时 removedMessages 为 0
+     */
+    public ContextCompressor.Stats compressNow(AgentContext ctx) {
+        int target = (int) (maxContextTokens * compressRatio);
+        ContextCompressor.Stats stats = ContextCompressor.compress(ctx, llm, target, compressKeep);
+        if (stats.removedMessages() > 0) {
+            lastRunUsage = lastRunUsage.plus(stats.usage());
+            hooks.forEach(h -> h.onContextCompressed(
+                    stats.removedMessages(), stats.savedChars(), ctx.summary()));
+        }
+        return stats;
+    }
+
+    /** 压缩触发阈值（字），供界面展示 */
+    public int compressThreshold() {
+        return (int) (maxContextTokens * compressRatio);
+    }
+
     // ---------------- Builder：参数太多，用建造者模式避免构造器一长串 ----------------
 
     /** 创建建造器，参数是 agent 名称 */
@@ -188,6 +243,12 @@ public class Agent {
         private int maxToolOutputChars = 1500;
         /** 上下文上限，默认 12000 字（约 12k token） */
         private int maxContextTokens = 12000;
+        /** 是否启用压缩，默认开 */
+        private boolean compressionEnabled = true;
+        /** 压缩触发比例，默认 70%。可用 agent.properties 的 compressRatio 覆盖 */
+        private double compressRatio = num(AgentConfig.get("compressRatio"), 0.7);
+        /** 压缩时保留的最近消息条数，默认 4。可用 compressKeep 覆盖 */
+        private int compressKeep = integer(AgentConfig.get("compressKeep"), 4);
 
         private Builder(String name) {
             this.name = name;
@@ -207,6 +268,34 @@ public class Agent {
         public Builder maxToolOutputChars(int n) { this.maxToolOutputChars = n; return this; }
         /** 设置上下文上限 */
         public Builder maxContextTokens(int n) { this.maxContextTokens = n; return this; }
+        /** 开关上下文压缩 */
+        public Builder compressionEnabled(boolean on) { this.compressionEnabled = on; return this; }
+        /** 设置压缩触发比例（0~1） */
+        public Builder compressRatio(double r) { this.compressRatio = r; return this; }
+        /** 设置压缩时保留的最近消息条数 */
+        public Builder compressKeep(int n) { this.compressKeep = n; return this; }
+
+        /** 解析配置里的比例，非法或越界就回到默认值 */
+        private static double num(String v, double def) {
+            if (v == null || v.isBlank()) return def;
+            try {
+                double d = Double.parseDouble(v.strip());
+                return (d > 0.2 && d < 1.0) ? d : def;
+            } catch (NumberFormatException e) {
+                return def;
+            }
+        }
+
+        /** 解析配置里的整数，非法就回到默认值 */
+        private static int integer(String v, int def) {
+            if (v == null || v.isBlank()) return def;
+            try {
+                int n = Integer.parseInt(v.strip());
+                return n > 0 ? n : def;
+            } catch (NumberFormatException e) {
+                return def;
+            }
+        }
 
         /** 构建。模型客户端是唯一必填项，缺了在启动时就报错，而不是等到调用时 NPE */
         public Agent build() {

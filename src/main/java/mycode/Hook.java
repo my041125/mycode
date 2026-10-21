@@ -35,4 +35,17 @@ public interface Hook {
     /** 执行工具之后。适合做：审计日志、结果脱敏、耗时统计 */
     default void afterTool(String name, String result) {
     }
+
+    /**
+     * 上下文被压缩之后。
+     *
+     * 这是一次「记忆改写」，用户有权知道发生了什么，否则会奇怪
+     * 「它怎么突然忘了我刚才说的」。
+     *
+     * @param removedMessages 移除了多少条消息
+     * @param savedChars      净省下多少字
+     * @param summary         新的历史摘要
+     */
+    default void onContextCompressed(int removedMessages, int savedChars, String summary) {
+    }
 }

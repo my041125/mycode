@@ -65,6 +65,22 @@ public class ChatSession {
         return totalUsage;
     }
 
+    /**
+     * 手动触发一次上下文压缩（对应 /compress 命令）。
+     * 平时是 agent 自动触发的，手动版用于「感觉它开始忘事了」的时候救急。
+     */
+    public ContextCompressor.Stats compressNow() {
+        ContextCompressor.Stats stats = agent.compressNow(ctx);
+        // 摘要调用会花 token，也要计入会话成本
+        totalUsage = totalUsage.plus(agent.lastRunUsage());
+        return stats;
+    }
+
+    /** 压缩触发阈值（字），界面展示用 */
+    public int compressThreshold() {
+        return agent.compressThreshold();
+    }
+
     /** 清空记忆，重新开始（对应 /clear 命令） */
     public void reset() {
         this.ctx = agent.newContext();
@@ -80,6 +96,11 @@ public class ChatSession {
     /** 当前上下文的估算字数，用来判断是不是快撑满了 */
     public int contextChars() {
         return ctx.estimateTokens();
+    }
+
+    /** 当前的历史摘要（压缩产物），空串表示还没压缩过 */
+    public String summary() {
+        return ctx.summary();
     }
 
     /** 会话已持续的秒数 */
