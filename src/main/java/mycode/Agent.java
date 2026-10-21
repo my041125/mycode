@@ -40,6 +40,9 @@ public class Agent {
     /** 上下文长度上限（按字数粗估），超出丢弃最老的对话 */
     private final int maxContextTokens;
 
+    /** 最近一次 run 累计消耗的 token（可能跨多轮工具调用），供会话做成本统计 */
+    private Usage lastRunUsage = Usage.ZERO;
+
     private Agent(Builder b) {
         this.name = b.name;
         this.llm = b.llm;
@@ -83,7 +86,21 @@ public class Agent {
      * @return 本轮最终回答
      */
     public String run(AgentContext ctx, String userInput) {
+        return run(ctx, userInput, null);
+    }
+
+    /**
+     * 带流式输出的执行。
+     *
+     * @param ctx       已有上下文
+     * @param userInput 本轮输入
+     * @param sink      文本增量回调；传 null 表示不要流式（等价于 run(ctx, input)）
+     * @return 本轮最终回答
+     */
+    public String run(AgentContext ctx, String userInput, StreamSink sink) {
         ctx.user(userInput);
+        // 每次任务开始清零，统计的是「这一次 run」而不是整个会话
+        lastRunUsage = Usage.ZERO;
 
         for (int step = 1; step <= maxSteps; step++) {
             // 每轮开始先裁剪上下文，避免越滚越大最终超出模型窗口
@@ -92,12 +109,18 @@ public class Agent {
 
             ChatResult result;
             try {
-                result = llm.chat(ctx, tools.all());
+                // 有 sink 就走流式接口，没有就走普通接口。
+                // 不支持流式的客户端由 LlmClient 的默认实现兜底，这里不用关心。
+                result = sink == null
+                        ? llm.chat(ctx, tools.all())
+                        : llm.chatStream(ctx, tools.all(), sink);
             } catch (Exception e) {
                 // 模型调用失败不重试到死：一次 401/限流重试八次只是白烧时间，直接如实上报
                 return "ERROR: 模型调用失败 - " + e.getMessage();
             }
             hooks.forEach(h -> h.afterLlm(result));
+            // 累计本轮用量：一次任务可能调好几轮模型，成本要加总
+            lastRunUsage = lastRunUsage.plus(result.usage());
 
             // 分支 A：模型不再要求调用工具 → 这就是最终答案，退出循环
             if (!result.hasToolCalls()) {
@@ -133,6 +156,11 @@ public class Agent {
         return s.length() <= maxToolOutputChars
                 ? s
                 : s.substring(0, maxToolOutputChars) + "\n...(结果过长已截断)";
+    }
+
+    /** 最近一次 run 的 token 用量，会话层用它累计总成本 */
+    public Usage lastRunUsage() {
+        return lastRunUsage;
     }
 
     // ---------------- Builder：参数太多，用建造者模式避免构造器一长串 ----------------

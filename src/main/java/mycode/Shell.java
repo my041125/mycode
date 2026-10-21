@@ -20,13 +20,13 @@ import java.util.stream.Stream;
  *   mycode "帮我改一下 xxx"      单次执行，跑完就退出（适合脚本调用）
  *   mycode --demo              离线演示：用脚本化假模型，不联网不花钱
  *
- * 为什么不用 JLine/Spring Shell：那类库会引入一堆依赖，
- * 而这里只需要「读一行、打印一行」，JDK 自带的 BufferedReader 足够。
+ * 权限由 --permission 控制（read-only / edit / full），默认 edit：
+ * 改文件放行，执行命令逐条确认。
  */
 public class Shell {
 
     /** 版本号，改功能时顺手改一下，方便确认跑的是哪个版本 */
-    private static final String VERSION = "1.0";
+    private static final String VERSION = "1.2";
 
     /** 提示符 */
     private static final String PROMPT = "\n› ";
@@ -41,17 +41,18 @@ public class Shell {
             工作方式：
             1. 需要了解代码时，先用 list_files 定位文件，再用 read_code 读原文，不要靠猜；
             2. 改代码必须用 edit_code，并且 anchor 从 read_code 的结果里逐字复制；
-            3. 一次只改指令要求的范围，禁止顺手重构、禁止重写整个文件；
-            4. 改动后 edit_code 会自动做语法校验，如果返回 ERROR 就先读文件再修正，不要盲目重试；
-            5. 保持原文件风格：缩进宽度、注释语言、命名习惯都跟原文件走；
-            6. 回答用中文，先给结论再给依据，代码位置要具体到文件和方法名；
-            7. 没把握的事直说，不要编造文件内容或 API。
+            3. 改完要用 run_command 验证（例如 mvn -q compile），根据报错继续修，直到通过；
+            4. 一次只改指令要求的范围，禁止顺手重构、禁止重写整个文件；
+            5. edit_code 会自动做语法校验，如果返回 ERROR 就先读文件再修正，不要盲目重试；
+            6. 保持原文件风格：缩进宽度、注释语言、命名习惯都跟原文件走；
+            7. 回答用中文，先给结论再给依据，代码位置要具体到文件和方法名；
+            8. 没把握的事直说，不要编造文件内容或 API。
             """;
 
     /**
      * 交互模式主流程。
      *
-     * @param args 命令行参数，支持 --demo（离线演示）
+     * @param args 命令行参数，支持 --demo / --permission=xxx
      */
     public static void run(String[] args) throws Exception {
         boolean demo = List.of(args).contains("--demo");
@@ -59,43 +60,52 @@ public class Shell {
 
         ToolRegistry tools = buildTools(root);
         LlmClient llm = demo ? demoModel() : LlmFactory.create(args);
+        PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
 
-        Agent agent = Agent.builder("mycode")
-                .llm(llm)
-                .tools(tools)
-                .systemPrompt(SYSTEM_PROMPT)
-                .hooks(new ConsoleHook())
-                .maxSteps(12)
-                .build();
+        // 整个会话共用同一个输入流：REPL 读指令，权限确认也读它，
+        // 分开建会导致缓冲区里的内容错乱
+        BufferedReader stdin = new BufferedReader(
+                new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-        printBanner(demo, args, tools, root);
+        Agent agent = buildAgent(llm, tools, mode, stdin);
+        printBanner(demo, args, tools, root, mode);
+
         ChatSession session = new ChatSession(agent);
-        repl(session, tools, root);
+        repl(session, tools, root, mode, stdin);
     }
 
     /**
-     * 单次执行模式：我的命令行里直接 mycode "问题" 就走这里。
+     * 单次执行模式：mycode "问题" 走这里。
      * 跑完立刻退出，输出可以直接重定向到文件，方便当脚本用。
      *
+     * 没有交互环境，所以权限确认一律按拒绝处理（只读命令不受影响）。
+     *
      * @param question 用户问题
-     * @param args     其余参数，用于选择模型
+     * @param args     其余参数，用于选择模型与权限
      */
     public static void runOnce(String question, String[] args) throws Exception {
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         ToolRegistry tools = buildTools(root);
-        Agent agent = Agent.builder("mycode")
-                .llm(LlmFactory.create(args))
-                .tools(tools)
-                .systemPrompt(SYSTEM_PROMPT)
-                .hooks(new ConsoleHook())
-                .maxSteps(12)
-                .build();
+        PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
+        Agent agent = buildAgent(LlmFactory.create(args), tools, mode, null);
 
         ChatSession session = new ChatSession(agent);
         long start = System.currentTimeMillis();
-        System.out.println(session.ask(question));
-        System.out.printf("%n— 用时 %.1fs · 上下文约 %d 字%n",
-                (System.currentTimeMillis() - start) / 1000.0, session.contextChars());
+
+        // 单次模式也开流式：边出边打印，观感好，也方便管道实时看到输出
+        StringBuilder streamed = new StringBuilder();
+        String answer = session.ask(question, delta -> {
+            streamed.append(delta);
+            System.out.print(delta);
+            System.out.flush();
+        });
+        if (streamed.length() == 0) {
+            System.out.println(answer);   // 没走流式（或模型没吐文字）时整段打印
+        }
+        System.out.printf("%n— 用时 %.1fs · %s · %s%n",
+                (System.currentTimeMillis() - start) / 1000.0,
+                Costs.describe(session.totalUsage()),
+                "上下文约 " + session.contextChars() + " 字");
     }
 
     // ---------------- 交互循环 ----------------
@@ -104,10 +114,8 @@ public class Shell {
      * 读一行 → 处理 → 打印 → 再读一行。
      * 支持 Ctrl+D（EOF）退出，也支持 /exit /quit。
      */
-    private static void repl(ChatSession session, ToolRegistry tools, Path root) throws Exception {
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8));
-
+    private static void repl(ChatSession session, ToolRegistry tools, Path root,
+                             PermissionMode mode, BufferedReader reader) throws Exception {
         while (true) {
             System.out.print(PROMPT);
             System.out.flush();
@@ -125,16 +133,28 @@ public class Shell {
 
             // 斜杠命令在本地处理，不进模型，省 token 也更可靠
             if (input.startsWith("/")) {
-                if (!handleCommand(input, session, tools, root)) return;
+                if (!handleCommand(input, session, tools, root, mode)) return;
                 continue;
             }
 
             long start = System.currentTimeMillis();
             try {
-                String answer = session.ask(input);
-                System.out.println("\n" + answer);
-                System.out.printf("%n— 用时 %.1fs · 上下文约 %d 字 · 第 %d 轮%n",
+                // 流式：文字边生成边打印；没有文字增量时（例如纯工具调用）就什么都不打
+                StringBuilder streamed = new StringBuilder();
+                String answer = session.ask(input, delta -> {
+                    streamed.append(delta);
+                    System.out.print(delta);
+                    System.out.flush();
+                });
+                if (streamed.length() == 0) {
+                    System.out.println(answer);
+                } else if (!answer.equals(streamed.toString()) && !answer.isBlank()) {
+                    // 极少数情况：流式拼接的文本与最终文本不一致，以最终文本为准补一行提示
+                    System.out.println();
+                }
+                System.out.printf("%n— 用时 %.1fs · %s · 上下文约 %d 字 · 第 %d 轮%n",
                         (System.currentTimeMillis() - start) / 1000.0,
+                        Costs.describe(session.totalUsage()),
                         session.contextChars(), session.turns());
             } catch (Exception e) {
                 // 单次失败不退出会话，用户可以直接重试或换个说法
@@ -149,7 +169,7 @@ public class Shell {
      * @return false 表示要退出会话
      */
     private static boolean handleCommand(String input, ChatSession session,
-                                         ToolRegistry tools, Path root) {
+                                         ToolRegistry tools, Path root, PermissionMode mode) {
         String cmd = input.split("\\s+")[0].toLowerCase();
         switch (cmd) {
             case "/exit", "/quit", "/q" -> {
@@ -172,11 +192,22 @@ public class Shell {
             }
             case "/files" -> listFiles(root);
             case "/model" -> printModel();
-            case "/cost" -> System.out.printf("上下文约 %d 字，已完成 %d 轮，耗时 %d 秒。%n",
-                    session.contextChars(), session.turns(), session.elapsedSeconds());
+            case "/permission" -> System.out.printf("当前权限模式：%s（%s）%n", mode.cli, mode.label);
+            case "/cost" -> printCost(session);
             default -> System.out.println("未知命令: " + cmd + "，输入 /help 查看可用命令。");
         }
         return true;
+    }
+
+    /** 用量与耗时汇总。配了价格才显示金额，否则只报 token */
+    private static void printCost(ChatSession session) {
+        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
+        System.out.println("上下文   : 约 " + session.contextChars() + " 字");
+        System.out.println("轮次     : " + session.turns());
+        System.out.println("耗时     : " + session.elapsedSeconds() + " 秒");
+        if (!Costs.configured()) {
+            System.out.println("提示     : 在 agent.properties 里配置 priceInputPerK / priceOutputPerK 可显示金额");
+        }
     }
 
     /** 列出当前项目里的代码文件，最多 30 个，避免刷屏 */
@@ -219,24 +250,34 @@ public class Shell {
                 用法：直接输入问题，回车发送。需要 agent 动手时会自动调用工具。
 
                 斜杠命令（本地执行，不消耗 token）：
-                  /help      显示本帮助
-                  /clear     清空上下文，开始新会话
-                  /tools     查看已加载的工具
-                  /files     列出当前项目的代码文件
-                  /model     查看当前模型配置
-                  /cost      查看上下文长度与耗时
-                  /exit      退出（同 Ctrl+D）
+                  /help        显示本帮助
+                  /clear       清空上下文，开始新会话
+                  /tools       查看已加载的工具
+                  /files       列出当前项目的代码文件
+                  /model       查看当前模型配置
+                  /permission  查看当前权限模式
+                  /cost        查看 token 用量与耗时
+                  /exit        退出（同 Ctrl+D）
+
+                权限模式（启动参数 --permission=）：
+                  read-only    只读，不能改文件也不能执行命令
+                  edit         可改文件；执行命令需要你确认（默认）
+                  full         全部放行，不再询问
+
+                安全的只读命令（ls/git status/java -version 等）不会打断你；
+                危险命令（删除、格式化、强制推送）永远拒绝。
 
                 示例：
                   › 看看 src/main/java/mycode/Agent.java 里的循环有没问题
-                  › 给 TicketService 的 total 方法加儿童半价，别动注释风格
-                  › 帮我找一下哪个文件定义了 edit_code 工具
+                  › 给 TicketService 的 total 方法加儿童半价，然后编译验证
+                  › 帮我跑一下测试，看看哪里挂了
                 """);
     }
 
     // ---------------- 启动横幅 ----------------
 
-    private static void printBanner(boolean demo, String[] args, ToolRegistry tools, Path root) {
+    private static void printBanner(boolean demo, String[] args, ToolRegistry tools,
+                                    Path root, PermissionMode mode) {
         String model;
         if (demo) {
             model = "离线演示模型（脚本化，不联网）";
@@ -259,6 +300,7 @@ public class Shell {
         System.out.println("  " + "-".repeat(52));
         System.out.println("  模型   " + model);
         System.out.println("  工具   " + tools.all().size() + " 个");
+        System.out.println("  权限   " + mode.cli + "（" + mode.label + "）");
         System.out.println("  目录   " + root);
         System.out.println("  " + "-".repeat(52));
         System.out.println("  直接说话即可，/help 看命令，/exit 退出");
@@ -267,7 +309,24 @@ public class Shell {
     // ---------------- 装配 ----------------
 
     /**
-     * 组装工具：代码三件套 + 可选的联网搜索。
+     * 组装 agent：模型 + 工具 + 两个钩子。
+     *
+     * 钩子顺序有讲究：ConsoleHook 先打「它要调用什么」，PermissionHook 再决定放不放行，
+     * 这样用户在被询问之前就知道这行命令是什么来路。
+     */
+    private static Agent buildAgent(LlmClient llm, ToolRegistry tools,
+                                    PermissionMode mode, BufferedReader stdin) {
+        return Agent.builder("mycode")
+                .llm(llm)
+                .tools(tools)
+                .systemPrompt(SYSTEM_PROMPT)
+                .hooks(new ConsoleHook(), PermissionHook.forMode(mode, stdin))
+                .maxSteps(12)
+                .build();
+    }
+
+    /**
+     * 组装工具：代码三件套 + 命令执行 + 可选的联网搜索。
      *
      * 搜索工具只在配了密钥时才挂上 —— 命令行工具不该因为缺一个可选功能就启动失败。
      */
@@ -275,7 +334,8 @@ public class Shell {
         ToolRegistry tools = new ToolRegistry()
                 .register(CodeTools.listTool(root))
                 .register(CodeTools.readTool(root))
-                .register(new CodeEditTool(root));
+                .register(new CodeEditTool(root))
+                .register(new CommandTool(root));   // 编译、跑测试，闭环的关键
 
         String bocha = System.getenv("BOCHA_API_KEY");
         String tavily = System.getenv("TAVILY_API_KEY");
@@ -290,8 +350,8 @@ public class Shell {
     }
 
     /**
-     * 离线演示用的假模型：先列目录、再读一个文件，然后给结论。
-     * 用来在没有 API key 的情况下验证整条交互链路。
+     * 离线演示用的假模型：列目录 → 读文件 → 跑一条只读命令，然后给结论。
+     * 用来在没有 API key 的情况下验证整条交互链路（包括权限与流式）。
      */
     private static LlmClient demoModel() {
         return ScriptedLlmClient.of(
@@ -299,15 +359,33 @@ public class Shell {
                         ScriptedLlmClient.call("call_1", "list_files",
                                 Map.of("dir", "src/main/java/mycode", "keyword", "Agent")),
                         ScriptedLlmClient.call("call_2", "read_code",
-                                Map.of("path", "samples/TicketService.java"))),
+                                Map.of("path", "samples/TicketService.java")),
+                        ScriptedLlmClient.call("call_3", "run_command",
+                                Map.of("command", "java -version"))),
                 ctx -> """
-                        这是离线演示模式的回答：已经列出目录并读过一个文件，但不会真的调用模型。
+                        这是离线演示模式的回答：列出了目录、读过一个文件，并尝试执行了一条只读命令，
+                        但不会真的调用模型。
 
                         要体验真实效果，请在 agent.properties 里填好 apiKey，然后运行：
                           mycode
 
-                        下面是你刚才实际执行的工具返回，可以用它确认链路是否正常：
+                        下面是你刚才实际执行的最后一条工具返回，可以用它确认链路是否正常：
                         """ + "\n" + ScriptedLlmClient.lastObservation(ctx));
+    }
+
+    /**
+     * 从 --name=value 形式的参数里取值。
+     *
+     * @return 取不到返回 null
+     */
+    private static String argValue(String[] args, String name) {
+        for (String a : args) {
+            if (a.startsWith(name + "=")) {
+                String v = a.substring(name.length() + 1).strip();
+                if (!v.isEmpty()) return v;
+            }
+        }
+        return null;
     }
 
     /** 工具类，禁止实例化 */

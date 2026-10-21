@@ -151,8 +151,11 @@ public class AnthropicClient implements LlmClient {
                         inputJson, OpenAiCompatibleClient.Args.parse(M, inputJson)));
             }
         }
-        // stop_reason = tool_use 时表示要执行工具，end_turn 表示说完了
-        return new ChatResult(text.length() == 0 ? null : text.toString(), calls);
+        // stop_reason = tool_use 时表示要执行工具，end_turn 表示说完了。
+        // 用量字段名和 OpenAI 不同：input_tokens / output_tokens
+        JsonNode u = root.path("usage");
+        Usage usage = new Usage(u.path("input_tokens").asInt(0), u.path("output_tokens").asInt(0));
+        return new ChatResult(text.length() == 0 ? null : text.toString(), calls, usage);
     }
 
     // ---------------- 协议转换核心 ----------------

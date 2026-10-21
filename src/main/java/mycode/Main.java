@@ -176,7 +176,16 @@ public class Main {
                   mycode --demo                   离线演示（用假模型，不花钱）
 
                 交互模式里的斜杠命令：
-                  /help  /clear  /tools  /files  /model  /cost  /exit
+                  /help  /clear  /tools  /files  /model  /permission  /cost  /exit
+
+                【权限】决定 agent 能做什么，默认 edit
+                  mycode --permission=read-only   只读：不能改文件、不能执行命令
+                  mycode --permission=edit        可改文件；执行命令逐条确认（默认）
+                  mycode --permission=full        全放行，不再询问
+
+                  只读命令（ls / git status / java -version 等）不会打断你；
+                  危险命令（rm -rf、格式化、强制推送）永远拒绝；
+                  读取 agent.properties 这类密钥文件也会被拒绝。
 
                 【调试与演示】保留下来验证单个模块，不花 token
                   mycode --mock                   主循环：查景点 → 查天气 → 算门票

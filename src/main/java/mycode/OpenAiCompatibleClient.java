@@ -5,10 +5,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -77,6 +81,11 @@ public class OpenAiCompatibleClient implements LlmClient {
      *   2. 出问题时可以直接把这段 JSON 粘到 Postman 里复现。
      */
     public String buildRequestJson(AgentContext ctx, List<Tool> tools) throws Exception {
+        return M.writeValueAsString(buildRequestBody(ctx, tools));
+    }
+
+    /** 组装请求体节点。抽出来是为了流式和非流式共用同一套构造逻辑 */
+    protected ObjectNode buildRequestBody(AgentContext ctx, List<Tool> tools) {
         ObjectNode body = M.createObjectNode();
         body.put("model", model);
         // 上下文消息本身就按 OpenAI 协议存的，直接序列化即可，不用转换
@@ -102,7 +111,7 @@ public class OpenAiCompatibleClient implements LlmClient {
         if (model.startsWith("qwen3")) {
             body.put("enable_thinking", false);
         }
-        return M.writeValueAsString(body);
+        return body;
     }
 
     /**
@@ -136,6 +145,79 @@ public class OpenAiCompatibleClient implements LlmClient {
     }
 
     /**
+     * 流式对话：边生成边把文本推给 sink。
+     *
+     * 与一次性请求的三处差异：
+     *   1. body 要带 stream=true；想拿用量还得加 stream_options.include_usage
+     *      （个别代理不认这个字段，会返回 400，所以做成失败后自动去掉重试一次）；
+     *   2. 响应是 SSE 文本流，要逐行读、剥掉 "data: " 前缀、遇到 [DONE] 结束；
+     *   3. tool_calls 的 arguments 是分片下发的，交给 SseAccumulator 按 index 拼。
+     */
+    @Override
+    public ChatResult chatStream(AgentContext ctx, List<Tool> tools, StreamSink sink) throws Exception {
+        ObjectNode body = buildRequestBody(ctx, tools);
+        body.put("stream", true);
+        body.putObject("stream_options").put("include_usage", true);
+
+        HttpResponse<InputStream> resp = postForStream(M.writeValueAsString(body));
+        if (resp.statusCode() == 400) {
+            // 兼容层不支持 stream_options 时，去掉重试一次，宁可没有用量也别整轮失败
+            String err = readAll(resp.body());
+            if (err.contains("stream_options")) {
+                body.remove("stream_options");
+                resp = postForStream(M.writeValueAsString(body));
+            } else {
+                throw new IllegalStateException("HTTP 400 -> " + head(err));
+            }
+        }
+        if (resp.statusCode() != 200) {
+            throw new IllegalStateException("HTTP " + resp.statusCode() + " -> " + head(readAll(resp.body())));
+        }
+
+        SseAccumulator acc = new SseAccumulator(sink == null ? null : sink::onText);
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank() || line.startsWith(":")) continue;   // 空行与心跳注释
+                if (!line.startsWith("data:")) continue;                 // event: 之类的行忽略
+                String data = line.substring(5).strip();
+                if ("[DONE]".equals(data)) break;
+                acc.accept(data);
+            }
+        }
+        return new ChatResult(acc.text(), acc.toolCalls(), acc.usage());
+    }
+
+    /** 发一个流式请求，返回原始字节流（不预先读成字符串，否则就不叫流式了） */
+    private HttpResponse<InputStream> postForStream(String json) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(endpoint))
+                .timeout(Duration.ofSeconds(180))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream");
+        if (apiKey != null && !apiKey.isBlank()) {
+            builder.header("Authorization", "Bearer " + apiKey);
+        }
+        extraHeaders.forEach(builder::header);
+        return http.send(builder.POST(HttpRequest.BodyPublishers.ofString(json)).build(),
+                HttpResponse.BodyHandlers.ofInputStream());
+    }
+
+    /** 把错误响应体读成字符串（用于 4xx 时给出可读原因） */
+    private String readAll(InputStream in) {
+        try (in) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "(无法读取错误响应)";
+        }
+    }
+
+    /** 只取错误信息前 300 字，避免把整页 HTML 打进控制台 */
+    private String head(String s) {
+        return s.substring(0, Math.min(300, s.length()));
+    }
+
+    /**
      * 解析响应报文。
      * 结构：choices[0].message.content 是文本，.tool_calls[] 是工具调用列表。
      */
@@ -152,7 +234,10 @@ public class OpenAiCompatibleClient implements LlmClient {
                     c.path("function").path("name").asText(),
                     argsJson, Args.parse(M, argsJson)));
         }
-        return new ChatResult(text, calls);
+        // 用量在顶层 usage 字段里，取不到就按 0 处理（部分代理会省略这个字段）
+        JsonNode u = root.path("usage");
+        Usage usage = new Usage(u.path("prompt_tokens").asInt(0), u.path("completion_tokens").asInt(0));
+        return new ChatResult(text, calls, usage);
     }
 
     /**

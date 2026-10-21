@@ -24,3 +24,9 @@ model=qwen3-max
 
 # Claude 等 Anthropic 协议服务才需要，其它可留空或删除
 # maxTokens=4096
+
+# ---- 成本估算（可选）----
+# 填了之后 /cost 会显示金额，不填就只显示 token 数。
+# 单位是「元 / 千 token」，按你自己服务商的实际价格填，这里不内置价格表。
+# priceInputPerK=0.004
+# priceOutputPerK=0.012

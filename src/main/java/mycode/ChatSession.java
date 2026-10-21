@@ -21,6 +21,9 @@ public class ChatSession {
     /** 已完成轮数，用于界面展示 */
     private int turns = 0;
 
+    /** 整场会话累计的 token 用量，用于 /cost 展示真实成本 */
+    private Usage totalUsage = Usage.ZERO;
+
     /** 会话创建时间，用于算总耗时 */
     private final long startMillis = System.currentTimeMillis();
 
@@ -39,14 +42,34 @@ public class ChatSession {
      * @return 最终回答
      */
     public String ask(String input) {
+        return ask(input, null);
+    }
+
+    /**
+     * 带流式的提问：文字边生成边推给 sink，答案仍然完整返回。
+     *
+     * @param input 用户输入
+     * @param sink  文本增量回调，null 表示不流式
+     * @return 最终回答
+     */
+    public String ask(String input, StreamSink sink) {
         turns++;
-        return agent.run(ctx, input);
+        String answer = agent.run(ctx, input, sink);
+        // 一次提问可能内部调好几轮模型，这里把整轮消耗一起累计
+        totalUsage = totalUsage.plus(agent.lastRunUsage());
+        return answer;
+    }
+
+    /** 整场会话累计用量 */
+    public Usage totalUsage() {
+        return totalUsage;
     }
 
     /** 清空记忆，重新开始（对应 /clear 命令） */
     public void reset() {
         this.ctx = agent.newContext();
         this.turns = 0;
+        this.totalUsage = Usage.ZERO;
     }
 
     /** 已完成轮数 */

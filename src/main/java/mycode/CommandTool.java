@@ -1,0 +1,170 @@
+package mycode;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * 命令执行工具 —— 补上编码 agent 最关键的那块拼图。
+ *
+ * 没有它，agent 只能「读代码、改代码」，改完相当于闭着眼睛；
+ * 有了它才能形成真正的闭环：
+ *   改代码 → mvn compile 看报错 → 根据报错再改 → 再编译 → 通过
+ *
+ * 三道保险，缺一不可：
+ *   1. CommandPolicy 判定危险命令，直接拒绝
+ *   2. PermissionHook 在 EDIT 模式下要求人工确认（本类只管执行，不管审批）
+ *   3. 超时强杀 + 输出截断，防止一条卡死的命令把整个会话拖死
+ */
+public class CommandTool implements Tool {
+
+    /** 允许的最长执行时间，超过就强杀 */
+    private static final int MAX_TIMEOUT_SECONDS = 120;
+
+    /** 默认超时 */
+    private static final int DEFAULT_TIMEOUT_SECONDS = 30;
+
+    /** 输出上限，超出部分丢弃（模型看最后一段最有用，但保留开头才能看到错误起点） */
+    private static final int MAX_OUTPUT_CHARS = 6000;
+
+    /** 执行命令的工作目录 */
+    private final Path workDir;
+
+    public CommandTool(Path workDir) {
+        this.workDir = workDir.toAbsolutePath().normalize();
+    }
+
+    @Override
+    public String name() {
+        return "run_command";
+    }
+
+    @Override
+    public String description() {
+        return """
+                在项目目录下执行一条 shell 命令，用于编译、跑测试、查看版本等。
+                使用要求：
+                1. 改完代码后应该主动用它验证（例如 mvn compile、mvn test），不要假设改对了；
+                2. 一次只跑一条命令，不要用 && 串一长串；
+                3. 危险命令（删除、格式化、强制推送等）会被直接拒绝，不要尝试绕过；
+                4. 命令默认 30 秒超时，安装依赖这类耗时操作请显式传 timeoutSeconds。
+                """;
+    }
+
+    @Override
+    public Map<String, Object> parameters() {
+        return Tool.schema(Map.of(
+                "command", Tool.str("要执行的命令，例如 mvn -q compile"),
+                "timeoutSeconds", Tool.num("超时秒数，默认 30，最大 120")),
+                "command");
+    }
+
+    @Override
+    public String execute(Map<String, Object> args) throws Exception {
+        String command = args.get("command") == null ? "" : String.valueOf(args.get("command")).strip();
+
+        // 第一道保险：危险命令在这里就挡住，不依赖调用方记得先问策略
+        CommandPolicy.Decision decision = CommandPolicy.evaluate(command);
+        if (!decision.allowed()) {
+            throw new IllegalArgumentException(decision.reason());
+        }
+
+        int timeout = args.get("timeoutSeconds") == null
+                ? DEFAULT_TIMEOUT_SECONDS
+                : Math.min(MAX_TIMEOUT_SECONDS, (int) Double.parseDouble(String.valueOf(args.get("timeoutSeconds"))));
+
+        boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
+        List<String> cmdline = windows
+                ? List.of("cmd.exe", "/c", command)
+                : List.of("sh", "-c", command);
+
+        long start = System.currentTimeMillis();
+        Process process = new ProcessBuilder(cmdline)
+                .directory(workDir.toFile())
+                .redirectErrorStream(true)   // stderr 合并进 stdout，模型不用分开看
+                .start();
+
+        // 用两个线程分别读流和等待，避免「进程写满缓冲区阻塞」的经典死锁
+        StringBuilder output = new StringBuilder();
+        Thread reader = new Thread(() -> {
+            try (InputStream in = process.getInputStream()) {
+                byte[] bytes = readAll(in);
+                output.append(decode(bytes));
+            } catch (Exception ignore) {
+                // 流被关闭（进程被强杀）时忽略
+            }
+        });
+        reader.setDaemon(true);
+        reader.start();
+
+        boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            reader.join(1000);
+            return "命令超时（" + timeout + " 秒）已被强制终止。\n"
+                    + "如果确实需要更长时间，请显式传 timeoutSeconds（最大 120）。\n"
+                    + "已捕获的输出：\n" + tail(output.toString());
+        }
+        reader.join(2000);
+
+        int exit = process.exitValue();
+        long cost = System.currentTimeMillis() - start;
+        String text = output.toString().strip();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("$ ").append(command).append('\n');
+        sb.append("退出码: ").append(exit).append(" | 耗时: ").append(cost).append("ms\n");
+        if (text.isEmpty()) {
+            sb.append("(无输出)");
+        } else {
+            sb.append("输出:\n").append(tail(text));
+        }
+        if (exit != 0) {
+            sb.append("\n提示：退出码非 0 表示执行失败，请看上面的错误信息。");
+        }
+        return sb.toString();
+    }
+
+    /** 读完整个流。命令输出可能很长，先全收再统一截断，避免边读边丢导致上下文断片 */
+    private byte[] readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = in.read(chunk)) > 0) {
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
+    }
+
+    /**
+     * 解码输出。
+     * Windows 下 cmd 和多数 Java 工具按 GBK 输出，但有些现代工具用 UTF-8，
+     * 所以先严格试 UTF-8，失败再退回 GBK —— 和 CodeFile 用的是同一套思路。
+     */
+    private String decode(byte[] bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+        } catch (CharacterCodingException e) {
+            return new String(bytes, Charset.forName("GBK"));
+        }
+    }
+
+    /** 截断输出。保留开头（错误起点）和结尾（错误汇总）各一半，中间省略 */
+    private String tail(String text) {
+        if (text.length() <= MAX_OUTPUT_CHARS) return text;
+        int half = MAX_OUTPUT_CHARS / 2;
+        String head = text.substring(0, half);
+        String tail = text.substring(text.length() - half);
+        return head + "\n…（中间省略 " + (text.length() - MAX_OUTPUT_CHARS) + " 字符）…\n" + tail;
+    }
+}

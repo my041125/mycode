@@ -27,4 +27,21 @@ public interface LlmClient {
      * @return 本轮结果，可能是文本、可能是工具调用，也可能两者都有
      */
     ChatResult chat(AgentContext ctx, List<Tool> tools) throws Exception;
+
+    /**
+     * 流式版本：边生成边把文本增量推给 sink。
+     *
+     * 默认实现退化成「一次性拿到结果再整段推给 sink」，
+     * 这样不支持流式的客户端（比如当前的 Anthropic 实现）不用写任何代码就能用上这个接口，
+     * 代价只是没有逐字效果。真正的流式由具体客户端覆盖实现。
+     *
+     * @param sink 文本增量回调，为 null 时等价于调用 chat()
+     */
+    default ChatResult chatStream(AgentContext ctx, List<Tool> tools, StreamSink sink) throws Exception {
+        ChatResult result = chat(ctx, tools);
+        if (sink != null && result.text() != null) {
+            sink.onText(result.text());
+        }
+        return result;
+    }
 }
