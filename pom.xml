@@ -1,19 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  mini-agent：一个从零手写的 Java agent 内核（教学项目）
+  mycode：一个从零手写的命令行 AI 编程助手（个人玩具项目）
 
   设计原则：除 JSON 序列化外不引入任何框架依赖。
   目的是让人看清 agent 到底由哪些零件组成，而不是再学一套框架 API。
+
+  构建产物：target/mycode.jar（可独立运行，java -jar 直接启动）
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- 项目坐标：本地运行用，不需要发布到仓库 -->
-  <groupId>miniagent</groupId>
-  <artifactId>mini-agent</artifactId>
+  <!-- 项目坐标 -->
+  <groupId>mycode</groupId>
+  <artifactId>mycode</artifactId>
   <version>1.0</version>
+  <name>mycode</name>
 
   <properties>
     <!-- JDK 17：因为用到了 record、文本块、switch 表达式、java.net.http -->
@@ -37,21 +40,47 @@
   </dependencies>
 
   <build>
+    <!-- 产物固定叫 mycode.jar，启动脚本直接引用这个名字 -->
+    <finalName>mycode</finalName>
     <plugins>
       <!--
-        exec 插件：支持用 mvn exec:java 直接运行并传入命令行参数，
-        免去手动打 jar 包、拼 classpath 的麻烦。
-        想换入口类时可以临时覆盖：-Dexec.mainClass=miniagent.其他类
-        （注意 XML 注释里不能出现连续两个减号，所以这里不写具体参数示例）
+        exec 插件：开发时免打包直接跑，支持 mvn exec:java 传命令行参数。
+        想换入口类时可以临时覆盖：-Dexec.mainClass=mycode.其他类
       -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.2.0</version>
         <configuration>
-          <!-- 默认入口：所有参数都从这里分发 -->
-          <mainClass>miniagent.Main</mainClass>
+          <mainClass>mycode.Main</mainClass>
         </configuration>
+      </plugin>
+
+      <!--
+        shade 插件：把 jackson 一起打进 mycode.jar，得到一个可直接 java -jar 运行的单文件。
+        没有它就得手动拼 classpath，命令行工具的启动体验会差很多。
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.1</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <!-- 写入 Main-Class，让 jar 可以直接执行 -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>mycode.Main</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

@@ -1,0 +1,189 @@
+package mycode;
+
+import java.util.List;
+
+/**
+ * 内核部件 3：ReAct 主循环。整个 agent 的本质就是这个 for 循环。
+ *
+ *   目标 → [思考 → 行动 → 观察] × n → 最终答案
+ *
+ * 三个容易踩的坑，全部在这里处理掉了：
+ *   1. 循环必须有 maxSteps 上限，否则模型抽风会无限调工具烧钱；
+ *   2. 没有工具调用 ≠ 出错了，它就是「模型认为可以回答了」，直接返回即可；
+ *   3. 工具结果必须截断，一次大结果就能把上下文撑爆，导致模型跑偏。
+ *
+ * 之所以用 for 而不是 while(true)：步数上限是硬约束，写在循环条件里比写在循环体里更难漏。
+ */
+public class Agent {
+
+    /** agent 名称，只用于日志输出，方便同时跑多个 agent 时区分子任务 */
+    private final String name;
+
+    /** 模型客户端。这是唯一与厂商耦合的地方 */
+    private final LlmClient llm;
+
+    /** 工具注册表，每轮要把全量工具清单传给模型 */
+    private final ToolRegistry tools;
+
+    /** 系统提示词。工具清单会被自动追加到它后面 */
+    private final String systemPrompt;
+
+    /** 拦截钩子链，按注册顺序依次执行 */
+    private final List<Hook> hooks;
+
+    /** 最大步数：模型最多来回几轮，到了还没结论就强制中止 */
+    private final int maxSteps;
+
+    /** 单次工具结果的字符上限，超出截断 */
+    private final int maxToolOutputChars;
+
+    /** 上下文长度上限（按字数粗估），超出丢弃最老的对话 */
+    private final int maxContextTokens;
+
+    private Agent(Builder b) {
+        this.name = b.name;
+        this.llm = b.llm;
+        this.tools = b.tools;
+        this.systemPrompt = b.systemPrompt;
+        this.hooks = b.hooks;
+        this.maxSteps = b.maxSteps;
+        this.maxToolOutputChars = b.maxToolOutputChars;
+        this.maxContextTokens = b.maxContextTokens;
+    }
+
+    /**
+     * 执行一次完整任务（单轮）。
+     *
+     * 每次调用都会新建一份上下文，也就是说两次 run 之间不共享记忆。
+     * 需要多轮对话请用 {@link #newContext()} 拿一份上下文，再调
+     * {@link #run(AgentContext, String)} —— 命令行交互模式就是这么做的。
+     *
+     * @param userInput 用户的自然语言任务描述
+     * @return 最终回答；出错时返回以 ERROR: 开头的说明文本，不抛异常
+     */
+    public String run(String userInput) {
+        return run(newContext(), userInput);
+    }
+
+    /**
+     * 新建一份干净上下文：system 提示词 + 自动追加的工具清单。
+     * 交互式对话需要把上下文留住，所以单独暴露出来。
+     */
+    public AgentContext newContext() {
+        return AgentContext.of(systemPrompt + tools.describe());
+    }
+
+    /**
+     * 在一份已有上下文上继续执行 —— 这是多轮对话的关键。
+     *
+     * 上下文里保留了之前的问答和工具结果，模型因此能记住上一轮说了什么。
+     *
+     * @param ctx       已有的上下文，会被就地追加消息
+     * @param userInput 本轮用户输入
+     * @return 本轮最终回答
+     */
+    public String run(AgentContext ctx, String userInput) {
+        ctx.user(userInput);
+
+        for (int step = 1; step <= maxSteps; step++) {
+            // 每轮开始先裁剪上下文，避免越滚越大最终超出模型窗口
+            ctx.trim(maxContextTokens);
+            hooks.forEach(h -> h.beforeLlm(ctx));
+
+            ChatResult result;
+            try {
+                result = llm.chat(ctx, tools.all());
+            } catch (Exception e) {
+                // 模型调用失败不重试到死：一次 401/限流重试八次只是白烧时间，直接如实上报
+                return "ERROR: 模型调用失败 - " + e.getMessage();
+            }
+            hooks.forEach(h -> h.afterLlm(result));
+
+            // 分支 A：模型不再要求调用工具 → 这就是最终答案，退出循环
+            if (!result.hasToolCalls()) {
+                return result.text() == null ? "" : result.text();
+            }
+
+            // 分支 B：先把「我想调什么」写回上下文，再逐个执行。
+            // 顺序不能反：assistant 消息必须在 tool 消息之前，否则协议校验不过
+            ctx.assistant(result.text(), result.toolCalls());
+
+            for (ToolCall call : result.toolCalls()) {
+                // 审批钩子：任一钩子返回 false 就拦住这次调用。
+                // 注意被拦截也要回填一条 observation，否则模型不知道自己被拒了，会一直重试
+                boolean allowed = hooks.stream().allMatch(h -> h.beforeTool(call.name(), call.args()));
+                String observation = allowed ? tools.dispatch(call.name(), call.args())
+                        : "ERROR: 该工具调用被审批钩子拦截，请换一种方式或告知用户";
+                // 必须用 final 变量接住，否则下面的 lambda 无法捕获（Java 闭包要求 effectively final）
+                final String obs = truncate(observation);
+                hooks.forEach(h -> h.afterTool(call.name(), obs));
+
+                // 最关键的一步：把观察结果回填进上下文，
+                // 下一轮模型才能「看到」工具到底返回了什么，这是 ReAct 的核心
+                ctx.toolResult(call.id(), call.name(), obs);
+            }
+        }
+        // 走到这里说明 maxSteps 用完还没收敛，属于异常情况，如实上报而不是编一个答案
+        return "ERROR: 达到最大步数 " + maxSteps + " 仍未完成，已中止（防止无限循环烧 token）";
+    }
+
+    /** 截断工具结果。宁可丢尾部，也不要让一条大结果挤掉整个对话历史 */
+    private String truncate(String s) {
+        if (s == null) return "";
+        return s.length() <= maxToolOutputChars
+                ? s
+                : s.substring(0, maxToolOutputChars) + "\n...(结果过长已截断)";
+    }
+
+    // ---------------- Builder：参数太多，用建造者模式避免构造器一长串 ----------------
+
+    /** 创建建造器，参数是 agent 名称 */
+    public static Builder builder(String name) {
+        return new Builder(name);
+    }
+
+    /** 建造器，每个 setter 都返回 this，可以链式调用 */
+    public static class Builder {
+        /** agent 名称，必填 */
+        private final String name;
+        /** 模型客户端，必填 */
+        private LlmClient llm;
+        /** 工具注册表，默认空表 */
+        private ToolRegistry tools = new ToolRegistry();
+        /** 系统提示词，默认一句兜底 */
+        private String systemPrompt = "你是一个严谨的助手。";
+        /** 钩子，默认不挂任何钩子 */
+        private List<Hook> hooks = List.of();
+        /** 最大步数，默认 8。一般任务 4~6 步足够，复杂任务再调大 */
+        private int maxSteps = 8;
+        /** 单条工具结果上限，默认 1500 字 */
+        private int maxToolOutputChars = 1500;
+        /** 上下文上限，默认 12000 字（约 12k token） */
+        private int maxContextTokens = 12000;
+
+        private Builder(String name) {
+            this.name = name;
+        }
+
+        /** 设置模型客户端 */
+        public Builder llm(LlmClient llm) { this.llm = llm; return this; }
+        /** 设置工具注册表 */
+        public Builder tools(ToolRegistry t) { this.tools = t; return this; }
+        /** 设置系统提示词 */
+        public Builder systemPrompt(String p) { this.systemPrompt = p; return this; }
+        /** 挂载钩子，可以传多个，按顺序执行 */
+        public Builder hooks(Hook... h) { this.hooks = List.of(h); return this; }
+        /** 设置最大步数 */
+        public Builder maxSteps(int n) { this.maxSteps = n; return this; }
+        /** 设置单条工具结果上限 */
+        public Builder maxToolOutputChars(int n) { this.maxToolOutputChars = n; return this; }
+        /** 设置上下文上限 */
+        public Builder maxContextTokens(int n) { this.maxContextTokens = n; return this; }
+
+        /** 构建。模型客户端是唯一必填项，缺了在启动时就报错，而不是等到调用时 NPE */
+        public Agent build() {
+            if (llm == null) throw new IllegalStateException("必须提供 LlmClient");
+            return new Agent(this);
+        }
+    }
+}
