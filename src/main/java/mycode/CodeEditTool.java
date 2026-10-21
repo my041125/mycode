@@ -1,8 +1,6 @@
 package mycode;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,11 +28,15 @@ public class CodeEditTool implements Tool {
     /** 项目根目录（绝对路径、已归一化）。所有文件操作都不允许跳出这个范围 */
     private final Path root;
 
+    /** 多版本备份仓库，每次修改前存一份快照，改坏了可以逐步回退 */
+    private final BackupStore backups;
+
     /**
      * @param root 项目根目录，通常传运行目录
      */
     public CodeEditTool(Path root) {
         this.root = root.toAbsolutePath().normalize();
+        this.backups = new BackupStore(this.root);
     }
 
     /** 工具名，模型靠它调用 */
@@ -108,15 +110,17 @@ public class CodeEditTool implements Tool {
             return "未产生任何改动（新代码与原文一致），请检查 anchor 是否选对、newCode 是否为空";
         }
 
-        // 4. 先备份再落盘
-        Path backup = codeFile.backup();
+        // 4. 先存快照再落盘。快照是多版本的，所以连改多次也能一层层退回去
+        Path snapshot = backups.save(file);
         codeFile.write(result.newText());
 
         // 5. 校验。Java 走编译器解析，其它语言走括号平衡
         JavaSyntaxCheck.Result check = JavaSyntaxCheck.check(file);
         if (!check.ok()) {
-            // 6. 校验失败立即回滚，保证磁盘上永远是「至少能编译」的版本
-            Files.copy(backup, file, StandardCopyOption.REPLACE_EXISTING);
+            // 6. 校验失败立即回滚。用 restore 而不是手工拷贝，
+            //    是为了顺带把这个「编译不过的版本」从历史里消耗掉 ——
+            //    否则用户按 undo 会先退到一个坏版本上，体验很糟
+            backups.restore(file);
             return "ERROR: 修改后校验失败，已自动回滚到修改前状态。原因：" + check.message()
                     + "\n请修正后重新提交本次修改。";
         }
@@ -134,7 +138,7 @@ public class CodeEditTool implements Tool {
                 + " | 编码: " + codeFile.charsetName() + " | 换行: "
                 + ("\r\n".equals(codeFile.eol()) ? "CRLF" : "LF") + "\n"
                 + "校验: " + check.message() + "\n"
-                + "备份: " + backup.getFileName() + "\n"
+                + "快照: " + root.relativize(snapshot).toString().replace('\\', '/') + "\n"
                 + "差异:\n" + String.join("\n", preview);
     }
 

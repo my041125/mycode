@@ -8,7 +8,6 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 
 /**
  * 一个代码文件的内存映像。
@@ -105,18 +104,6 @@ public class CodeFile {
     /** 取原文件的换行符，用于日志展示 */
     public String eol() {
         return eol;
-    }
-
-    /**
-     * 备份到同目录下的 文件名.bak。
-     * 万一改坏了（比如语法校验不过），可以据此还原。
-     *
-     * @return 备份文件路径
-     */
-    public Path backup() throws IOException {
-        Path bak = path.resolveSibling(path.getFileName() + ".bak");
-        Files.copy(path, bak, StandardCopyOption.REPLACE_EXISTING);
-        return bak;
     }
 
     /**

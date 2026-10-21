@@ -7,5 +7,8 @@ target/
 # 含 API Key，绝对不要提交到 git
 agent.properties
 
-# 代码编辑工具每次修改前自动生成的备份文件
+# 修改快照仓库：属于本地状态，随项目走没有意义
+.mycode/backups/
+
+# 历史遗留的单文件备份（旧版本工具生成）
 *.bak

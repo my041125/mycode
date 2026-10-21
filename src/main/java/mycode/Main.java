@@ -176,7 +176,7 @@ public class Main {
                   mycode --demo                   离线演示（用假模型，不花钱）
 
                 交互模式里的斜杠命令：
-                  /help  /clear  /tools  /files  /model  /permission  /cost  /exit
+                  /help  /clear  /tools  /files  /model  /permission  /cost  /undo  /history  /exit
 
                 【权限】决定 agent 能做什么，默认 edit
                   mycode --permission=read-only   只读：不能改文件、不能执行命令

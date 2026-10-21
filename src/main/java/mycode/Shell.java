@@ -206,14 +206,70 @@ public class Shell {
             case "/model" -> printModel();
             case "/permission" -> System.out.printf("当前权限模式：%s（%s）%n", mode.cli, mode.label);
             case "/cost" -> printCost(session);
+            case "/undo" -> undo(root, input);
+            case "/history" -> history(root);
             default -> System.out.println("未知命令: " + cmd + "，输入 /help 查看可用命令。");
         }
         return true;
     }
 
+    /**
+     * /undo：把文件退回到上一个版本。
+     *
+     * 不带参数时恢复「全局最近一次被修改的文件」，
+     * 带路径时恢复指定文件的最新快照。
+     */
+    private static void undo(Path root, String input) {
+        String arg = input.length() > "/undo".length() ? input.substring("/undo".length()).strip() : "";
+        try {
+            BackupStore store = new BackupStore(root);
+            Path target = arg.isEmpty() ? null : root.resolve(arg).normalize();
+            Path restored = store.restore(target);
+            System.out.println("已恢复到上一个版本: " + rel(root, restored));
+        } catch (IllegalStateException e) {
+            System.out.println("没有可恢复的历史版本（还没改过文件，或快照已用完）。");
+        } catch (Exception e) {
+            System.out.println("恢复失败: " + e.getMessage());
+        }
+    }
+
+    /** /history：列出最近几次修改前的快照 */
+    private static void history(Path root) {
+        try {
+            List<BackupStore.Snapshot> list = new BackupStore(root).recent(8);
+            if (list.isEmpty()) {
+                System.out.println("还没有历史版本。改过文件之后这里会有记录。");
+                return;
+            }
+            System.out.println("最近 " + list.size() + " 次修改前的快照：");
+            for (BackupStore.Snapshot s : list) {
+                System.out.printf("  %s  %-38s %,d 字节%n",
+                        prettyStamp(s.stamp()), rel(root, s.file()), s.sizeBytes());
+            }
+            System.out.println("提示：/undo 恢复最近一次；/undo 路径 恢复指定文件");
+        } catch (Exception e) {
+            System.out.println("读取历史失败: " + e.getMessage());
+        }
+    }
+
+    /** 相对路径展示，统一用正斜杠 */
+    private static String rel(Path root, Path file) {
+        try {
+            return root.relativize(file).toString().replace('\\', '/');
+        } catch (IllegalArgumentException e) {
+            return file.toString();
+        }
+    }
+
+    /** 把 20261021-165812-123 变成 2026-10-21 16:58:12 */
+    private static String prettyStamp(String stamp) {
+        if (stamp.length() < 15) return stamp;
+        return stamp.substring(0, 4) + "-" + stamp.substring(4, 6) + "-" + stamp.substring(6, 8)
+                + " " + stamp.substring(9, 11) + ":" + stamp.substring(11, 13) + ":" + stamp.substring(13, 15);
+    }
+
     /** 用量与耗时汇总。配了价格才显示金额，否则只报 token */
-    private static void printCost(ChatSession session) {
-        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
+    private static void printCost(ChatSession session) {        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
         System.out.println("上下文   : 约 " + session.contextChars() + " 字");
         System.out.println("轮次     : " + session.turns());
         System.out.println("耗时     : " + session.elapsedSeconds() + " 秒");
@@ -271,7 +327,13 @@ public class Shell {
                   /model       查看当前模型配置
                   /permission  查看当前权限模式
                   /cost        查看 token 用量与耗时
+                  /undo        撤销最近一次文件修改（/undo 路径 指定文件）
+                  /history     查看最近几次修改前的快照
                   /exit        退出（同 Ctrl+D）
+
+                快照说明：
+                  每次改文件前都会在 .mycode/backups/ 下存一份，每个文件保留最近 20 个版本，
+                  所以连改多次也能一层层退回去。语法校验失败的修改会被自动回滚，不占版本。
 
                 权限模式（启动参数 --permission=）：
                   read-only    只读，不能改文件也不能执行命令
