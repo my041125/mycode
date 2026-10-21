@@ -1,0 +1,10 @@
+# 统一换行符策略，避免 Windows 下 CRLF 把脚本搞坏
+
+# 默认：让 git 自动判断文本文件
+* text=auto
+
+# bash 启动脚本必须是 LF，否则 Git Bash 里会报 bad interpreter
+mycode text eol=lf
+
+# Windows 批处理必须是 CRLF
+*.bat text eol=crlf
