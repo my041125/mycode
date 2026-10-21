@@ -69,11 +69,10 @@ public class FetchPageTool implements Tool {
      */
     @Override
     public String execute(Map<String, Object> args) throws Exception {
-        // 1. 取参数
+        // 1. 取参数。maxChars 可能是字符串或小数，解析失败就退回默认值，
+        //    不能让一个格式问题把整个抓取流程废掉
         String raw = String.valueOf(args.getOrDefault("url", "")).strip();
-        int maxChars = args.get("maxChars") == null
-                ? DEFAULT_CHARS
-                : Math.min(MAX_CHARS, (int) Double.parseDouble(String.valueOf(args.get("maxChars"))));
+        int maxChars = Math.max(200, Math.min(MAX_CHARS, toInt(args.get("maxChars"), DEFAULT_CHARS)));
 
         // 2. 解析并校验协议，只放行 http/https
         URI uri;
@@ -146,6 +145,17 @@ public class FetchPageTool implements Tool {
             return Charset.forName(cs);
         } catch (Exception e) {
             return StandardCharsets.UTF_8;
+        }
+    }
+
+    /** 安全整数解析，解析失败退回默认值 */
+    private int toInt(Object v, int def) {
+        if (v == null) return def;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return (int) Double.parseDouble(String.valueOf(v).strip());
+        } catch (NumberFormatException e) {
+            return def;
         }
     }
 

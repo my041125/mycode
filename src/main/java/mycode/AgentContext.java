@@ -92,12 +92,21 @@ public class AgentContext {
      * 粗略估算上下文长度。
      * 中文一个字约等于 1 token，英文约 4 字符 1 token，这里统一按字符数估，够用就行。
      * 精确计算需要引 tiktoken 之类的分词器，对教学项目不值当。
+     *
+     * 注意必须把 tool_calls 里的参数也算进来：assistant 消息的 content 常常是空串，
+     * 真正的体积在 arguments 里（一次 edit_code 可能带几千字符的代码）。
+     * 早期版本只统计 content，导致上下文被严重低估、裁剪永不触发，最终请求超限报 400。
      */
     public int estimateTokens() {
         int n = 0;
         for (Map<String, Object> m : messages) {
             Object c = m.get("content");
             if (c != null) n += c.toString().length();
+            Object toolCalls = m.get("tool_calls");
+            if (toolCalls != null) {
+                // List<Map> 的 toString 已经包含了函数名和参数字符串，长度足够做估算
+                n += toolCalls.toString().length();
+            }
         }
         return n;
     }

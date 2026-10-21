@@ -300,8 +300,10 @@ public class CodeEditor {
         static Diff of(String a, String b) {
             String[] x = a.split("\n", -1);
             String[] y = b.split("\n", -1);
-            // 大文件用 LCS 太占内存，退化成长度估算
-            if ((long) x.length * y.length > 4_000_000L) {
+            // LCS 的 dp 表是 O(n×m) 的 int 数组，2000×2000 就要 16MB。
+            // 阈值定在 100 万格（约 4MB）是刻意的：大文件只做行数差估算，
+            // 反正那种规模下「精确到行」的统计对用户也没有意义。
+            if ((long) x.length * y.length > 1_000_000L) {
                 int d = Math.max(0, y.length - x.length);
                 return new Diff(d, Math.max(0, x.length - y.length));
             }

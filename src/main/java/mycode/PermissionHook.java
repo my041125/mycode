@@ -79,16 +79,33 @@ public class PermissionHook implements Hook {
 
     @Override
     public boolean beforeTool(String name, Map<String, Object> args) {
-        // 1. 只读模式：一切有副作用的操作都拒绝
-        if (mode == PermissionMode.READ_ONLY
-                && (TOOL_EDIT.equals(name) || TOOL_COMMAND.equals(name))) {
-            System.out.println("    ✗ 只读模式，已拒绝 " + name + "（需要写操作请用 --permission=edit）");
-            return false;
+        String command = String.valueOf(args.getOrDefault("command", ""));
+
+        // 1. 只读模式：编辑一律拒绝；执行命令只放行「无副作用」的那些
+        //    （以前这里把 run_command 一刀切拒绝，导致只读模式下连 ls、git status 都跑不了，
+        //      属于逻辑错误：只读模式应该允许读，而不是禁止一切命令）
+        if (mode == PermissionMode.READ_ONLY) {
+            if (TOOL_EDIT.equals(name)) {
+                System.out.println("    ✗ 只读模式，已拒绝 " + name + "（需要改文件请用 --permission=edit）");
+                return false;
+            }
+            if (TOOL_COMMAND.equals(name)) {
+                CommandPolicy.Decision decision = CommandPolicy.evaluate(command);
+                if (!decision.allowed()) {
+                    System.out.println("    ✗ " + decision.reason());
+                    return false;
+                }
+                if (decision.needsApproval()) {
+                    System.out.println("    ✗ 只读模式只允许无副作用的命令，已拒绝：" + command);
+                    return false;
+                }
+                return true;   // 只读命令放行
+            }
+            return true;
         }
 
         // 2. 命令执行：交给策略判定
         if (TOOL_COMMAND.equals(name)) {
-            String command = String.valueOf(args.getOrDefault("command", ""));
             CommandPolicy.Decision decision = CommandPolicy.evaluate(command);
             if (!decision.allowed()) {
                 System.out.println("    ✗ " + decision.reason());

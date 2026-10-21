@@ -32,6 +32,12 @@ public class Shell {
     private static final String PROMPT = "\n› ";
 
     /**
+     * 启动参数。
+     * /model 需要按真实参数解析，否则会把 agent.properties 的配置当成生效配置显示。
+     */
+    private static String[] startupArgs = new String[0];
+
+    /**
      * 系统提示词。命令行编程助手的行为规范都在这里。
      * 每一条都对应一个真实的失败模式，不是凑字数。
      */
@@ -55,6 +61,7 @@ public class Shell {
      * @param args 命令行参数，支持 --demo / --permission=xxx
      */
     public static void run(String[] args) throws Exception {
+        startupArgs = args;
         boolean demo = List.of(args).contains("--demo");
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
 
@@ -67,7 +74,11 @@ public class Shell {
         BufferedReader stdin = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-        Agent agent = buildAgent(llm, tools, mode, stdin);
+        // 只有真实终端才把输入流交给确认器：
+        // 管道/重定向场景下 stdin 里是脚本内容，确认器一读就会把下一条指令吃掉，
+        // 所以此时传 null，让 PermissionHook 走「非交互一律拒绝」的分支
+        boolean tty = System.console() != null;
+        Agent agent = buildAgent(llm, tools, mode, tty ? stdin : null);
         printBanner(demo, args, tools, root, mode);
 
         ChatSession session = new ChatSession(agent);
@@ -84,6 +95,7 @@ public class Shell {
      * @param args     其余参数，用于选择模型与权限
      */
     public static void runOnce(String question, String[] args) throws Exception {
+        startupArgs = args;
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         ToolRegistry tools = buildTools(root);
         PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
@@ -236,7 +248,9 @@ public class Shell {
     /** 展示当前生效的模型配置，key 打码 */
     private static void printModel() {
         try {
-            LlmFactory.Resolved r = LlmFactory.resolve(new String[0]);
+            // 必须按启动参数解析：否则 mycode --provider=openai 进来后
+            // /model 显示的却是 agent.properties 里的 dashscope，误导排查
+            LlmFactory.Resolved r = LlmFactory.resolve(startupArgs);
             System.out.printf("provider : %s%nendpoint : %s%nmodel    : %s%napiKey   : %s%n协议     : %s%n",
                     r.provider(), r.endpoint(), r.model(), LlmFactory.mask(r.apiKey()),
                     r.anthropic() ? "Anthropic Messages" : "OpenAI 兼容");

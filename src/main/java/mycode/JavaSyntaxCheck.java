@@ -8,8 +8,6 @@ import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
 import javax.tools.ToolProvider;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
@@ -97,7 +95,9 @@ public class JavaSyntaxCheck {
      */
     private static String balanceCheck(Path file) {
         try {
-            String s = Files.readString(file, StandardCharsets.UTF_8);
+            // 同样不能用 Files.readString(UTF_8)：GBK 文件会解码失败，
+            // 现在的写法是「读不了就跳过校验」，等于静默失效 —— 比没有校验更危险。
+            String s = CodeFile.read(file).text();
             int[] stack = new int[256];   // 手动栈，够用即可
             int sp = 0;
             boolean inStr = false, inChar = false, inLine = false, inBlock = false;

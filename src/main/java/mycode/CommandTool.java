@@ -77,9 +77,8 @@ public class CommandTool implements Tool {
             throw new IllegalArgumentException(decision.reason());
         }
 
-        int timeout = args.get("timeoutSeconds") == null
-                ? DEFAULT_TIMEOUT_SECONDS
-                : Math.min(MAX_TIMEOUT_SECONDS, (int) Double.parseDouble(String.valueOf(args.get("timeoutSeconds"))));
+        int timeout = Math.max(1, Math.min(MAX_TIMEOUT_SECONDS,
+                toInt(args.get("timeoutSeconds"), DEFAULT_TIMEOUT_SECONDS)));
 
         boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
         List<String> cmdline = windows
@@ -92,12 +91,19 @@ public class CommandTool implements Tool {
                 .redirectErrorStream(true)   // stderr 合并进 stdout，模型不用分开看
                 .start();
 
-        // 用两个线程分别读流和等待，避免「进程写满缓冲区阻塞」的经典死锁
+        // 用两个线程分别读流和等待，避免「进程写满缓冲区阻塞」的经典死锁。
+        //
+        // 这里有一个容易忽略的并发问题：reader 线程往 output 里写，主线程在超时路径上
+        // 可能还没等它结束就去读 —— StringBuilder 不是线程安全的，并发读写会读到半截内容，
+        // 甚至抛 ArrayIndexOutOfBoundsException。所以统一在锁内读写。
         StringBuilder output = new StringBuilder();
         Thread reader = new Thread(() -> {
             try (InputStream in = process.getInputStream()) {
                 byte[] bytes = readAll(in);
-                output.append(decode(bytes));
+                String text = decode(bytes);
+                synchronized (output) {
+                    output.append(text);
+                }
             } catch (Exception ignore) {
                 // 流被关闭（进程被强杀）时忽略
             }
@@ -108,16 +114,17 @@ public class CommandTool implements Tool {
         boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
         if (!finished) {
             process.destroyForcibly();
+            // 等读线程收尾，但设上限：进程被杀后管道可能迟迟不关，不能无限等
             reader.join(1000);
             return "命令超时（" + timeout + " 秒）已被强制终止。\n"
                     + "如果确实需要更长时间，请显式传 timeoutSeconds（最大 120）。\n"
-                    + "已捕获的输出：\n" + tail(output.toString());
+                    + "已捕获的输出：\n" + tail(snapshot(output));
         }
         reader.join(2000);
 
         int exit = process.exitValue();
         long cost = System.currentTimeMillis() - start;
-        String text = output.toString().strip();
+        String text = snapshot(output).strip();
 
         StringBuilder sb = new StringBuilder();
         sb.append("$ ").append(command).append('\n');
@@ -131,6 +138,27 @@ public class CommandTool implements Tool {
             sb.append("\n提示：退出码非 0 表示执行失败，请看上面的错误信息。");
         }
         return sb.toString();
+    }
+
+    /** 在锁内取一份输出快照，避免和读线程并发访问 StringBuilder */
+    private String snapshot(StringBuilder buffer) {
+        synchronized (buffer) {
+            return buffer.toString();
+        }
+    }
+
+    /**
+     * 安全的整数解析：模型可能传小数、字符串或者干脆传错类型。
+     * 解析失败时用默认值，而不是让一条命令因为参数格式问题整轮失败。
+     */
+    private int toInt(Object v, int def) {
+        if (v == null) return def;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return (int) Double.parseDouble(String.valueOf(v).strip());
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     /** 读完整个流。命令输出可能很长，先全收再统一截断，避免边读边丢导致上下文断片 */

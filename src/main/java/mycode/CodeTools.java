@@ -49,7 +49,10 @@ public class CodeTools {
                     if (!Files.isRegularFile(f)) throw new IllegalArgumentException("文件不存在: " + a.get("path"));
 
                     // 2. 计算要读的行范围，越界要明确报错而不是静默返回空
-                    List<String> lines = Files.readAllLines(f);
+                    // 不能用 Files.readAllLines：它固定按 UTF-8 严格解码，
+                    // 遇到 GBK 编码的老项目文件会直接抛 MalformedInputException。
+                    // 交给 CodeFile 做编码识别，和写文件时保持同一套判断。
+                    List<String> lines = CodeFile.read(f).text().lines().toList();
                     int from = a.get("startLine") == null ? 1 : Math.max(1, toInt(a.get("startLine")));
                     int to = a.get("endLine") == null
                             ? from + MAX_READ_LINES - 1
@@ -122,9 +125,14 @@ public class CodeTools {
                 });
     }
 
-    /** 把模型可能传成字符串或小数的行号统一转成 int */
+    /** 把模型可能传成字符串或小数的行号统一转成 int；解析失败按 1 处理（即从头读） */
     private static int toInt(Object v) {
-        return v instanceof Number n ? n.intValue() : (int) Double.parseDouble(String.valueOf(v));
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return (int) Double.parseDouble(String.valueOf(v).strip());
+        } catch (NumberFormatException e) {
+            return 1;
+        }
     }
 
     /** 工具类，禁止实例化 */

@@ -65,14 +65,22 @@ public class LlmFactory {
      * @return 解析后的完整配置
      */
     public static Resolved resolve(String[] args) {
-        String providerName = pick(args, "--provider", "LLM_PROVIDER", null);
-        if (providerName == null) providerName = AgentConfig.get("provider");
-        if (providerName == null) providerName = "dashscope";
+        String providerArg = pick(args, "--provider", "LLM_PROVIDER", null);
+        String providerFile = AgentConfig.get("provider");
+        String providerName = providerArg != null ? providerArg : (providerFile != null ? providerFile : "dashscope");
         Provider p = Provider.of(providerName);
 
-        // baseUrl：自定义地址或中转服务
+        // 命令行显式指定了另一家服务商时，配置文件里的 baseUrl / model 属于「旧的那家」，
+        // 必须忽略，否则会出现 provider=openai 但 endpoint 还是 dashscope 的错配
+        // （key 是通用配置，保留不动，用户仍可用 --api-key 覆盖）。
+        boolean providerSwitched = providerArg != null && providerFile != null
+                && !providerArg.equalsIgnoreCase(providerFile);
+
+        // baseUrl：命令行 > 环境变量 > 配置文件（同服务商时才用）> 预设
         String baseUrl = pick(args, "--base-url", "LLM_BASE_URL", null);
-        if (baseUrl == null) baseUrl = AgentConfig.get("baseUrl");
+        if (baseUrl == null && !providerSwitched) {
+            baseUrl = AgentConfig.get("baseUrl");
+        }
         if (baseUrl == null) baseUrl = p.endpoint;
         if (baseUrl == null || baseUrl.isBlank()) {
             throw new IllegalStateException("""
@@ -90,7 +98,9 @@ public class LlmFactory {
         if (apiKey == null) apiKey = "";
 
         String model = pick(args, "--model", "MODEL", null);
-        if (model == null) model = AgentConfig.get("model");
+        if (model == null && !providerSwitched) {
+            model = AgentConfig.get("model");
+        }
         if (model == null) model = p.defaultModel;
         if (model == null || model.isBlank()) {
             throw new IllegalStateException("provider=custom 必须指定 model，例如 --model=qwen3-max");
