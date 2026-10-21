@@ -176,7 +176,7 @@ public class Main {
                   mycode --demo                   离线演示（用假模型，不花钱）
 
                 交互模式里的斜杠命令：
-                  /help  /clear  /tools  /files  /model  /permission  /cost  /undo  /history  /exit
+                  /help  /clear  /tools  /files  /model  /permission  /lang  /cost  /compress  /undo  /history  /exit
 
                 【权限】决定 agent 能做什么，默认 edit
                   mycode --permission=read-only   只读：不能改文件、不能执行命令
@@ -186,6 +186,11 @@ public class Main {
                   只读命令（ls / git status / java -version 等）不会打断你；
                   危险命令（rm -rf、格式化、强制推送）永远拒绝；
                   读取 agent.properties 这类密钥文件也会被拒绝。
+
+                【语言】客户端界面为中文，回答语言可切换，默认简体中文
+                  mycode --lang=zh                中文回答（默认）
+                  mycode --lang=en                英文回答
+                  交互中也可用 /lang 切换（切换会清空当前上下文）
 
                 【调试与演示】保留下来验证单个模块，不花 token
                   mycode --mock                   主循环：查景点 → 查天气 → 算门票
@@ -236,14 +241,14 @@ public class Main {
     private static void printConfig(String[] args) {
         LlmFactory.Resolved r = LlmFactory.resolve(args);
         System.out.println("=========== 当前生效的模型配置 ===========");
-        System.out.printf("provider  : %s%n", r.provider());
-        System.out.printf("endpoint  : %s%n", r.endpoint());
-        System.out.printf("model     : %s%n", r.model());
+        System.out.printf("服务商   : %s%n", r.provider());
+        System.out.printf("接口地址 : %s%n", r.endpoint());
+        System.out.printf("模型     : %s%n", r.model());
         // key 打码显示，避免截图或录屏时泄露
-        System.out.printf("apiKey    : %s%n", LlmFactory.mask(r.apiKey()));
-        System.out.printf("protocol  : %s%n", r.anthropic() ? "Anthropic Messages" : "OpenAI 兼容");
-        System.out.printf("maxTokens : %d%n", r.maxTokens());
-        System.out.println("配置文件   : " + (AgentConfig.hasFile()
+        System.out.printf("密钥     : %s%n", LlmFactory.mask(r.apiKey()));
+        System.out.printf("协议     : %s%n", r.anthropic() ? "Anthropic Messages" : "OpenAI 兼容");
+        System.out.printf("最大输出 : %d tokens%n", r.maxTokens());
+        System.out.println("配置文件 : " + (AgentConfig.hasFile()
                 ? "agent.properties 已加载" : "未找到 agent.properties（只用命令行/环境变量/预设）"));
         System.out.println("=========================================");
     }

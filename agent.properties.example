@@ -22,6 +22,14 @@ apiKey=sk-你的key
 # 模型名，会覆盖预设的默认模型
 model=qwen3-max
 
+# 回答语言：zh（简体中文，默认）/ en（英文）
+# 界面文字始终是中文，这个只影响模型怎么回答
+# language=zh
+
+# 上下文压缩：超过 70% 时把最老的对话压成摘要；压缩时保留最近 4 条消息
+# compressRatio=0.7
+# compressKeep=4
+
 # Claude 等 Anthropic 协议服务才需要，其它可留空或删除
 # maxTokens=4096
 

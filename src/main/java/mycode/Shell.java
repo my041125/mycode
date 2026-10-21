@@ -37,6 +37,27 @@ public class Shell {
      */
     private static String[] startupArgs = new String[0];
 
+    /** 当前界面/回答语言，默认简体中文，可用 --lang=en 或 /lang en 切换 */
+    private static Language lang = Language.ZH;
+
+    /**
+     * 运行期依赖。/lang 切换语言时要重建 agent，所以这些引用得留着。
+     */
+    private record Runtime(LlmClient llm, ToolRegistry tools, PermissionMode mode, BufferedReader stdin) {
+    }
+
+    /**
+     * 会话容器。
+     * 用可变容器而不是直接传 ChatSession，是因为 /lang 会整只替换掉会话。
+     */
+    private static final class SessionHolder {
+        private ChatSession session;
+
+        private SessionHolder(ChatSession session) {
+            this.session = session;
+        }
+    }
+
     /**
      * 系统提示词。命令行编程助手的行为规范都在这里。
      * 每一条都对应一个真实的失败模式，不是凑字数。
@@ -51,7 +72,7 @@ public class Shell {
             4. 一次只改指令要求的范围，禁止顺手重构、禁止重写整个文件；
             5. edit_code 会自动做语法校验，如果返回 ERROR 就先读文件再修正，不要盲目重试；
             6. 保持原文件风格：缩进宽度、注释语言、命名习惯都跟原文件走；
-            7. 回答用中文，先给结论再给依据，代码位置要具体到文件和方法名；
+            7. 先给结论再给依据，代码位置要具体到文件和方法名（回答语言见文末的语言要求）；
             8. 没把握的事直说，不要编造文件内容或 API。
             """;
 
@@ -62,6 +83,7 @@ public class Shell {
      */
     public static void run(String[] args) throws Exception {
         startupArgs = args;
+        lang = Language.fromArgs(args);
         boolean demo = List.of(args).contains("--demo");
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
 
@@ -78,11 +100,12 @@ public class Shell {
         // 管道/重定向场景下 stdin 里是脚本内容，确认器一读就会把下一条指令吃掉，
         // 所以此时传 null，让 PermissionHook 走「非交互一律拒绝」的分支
         boolean tty = System.console() != null;
-        Agent agent = buildAgent(llm, tools, mode, tty ? stdin : null);
-        printBanner(demo, args, tools, root, mode);
+        Runtime rt = new Runtime(llm, tools, mode, tty ? stdin : null);
+        lastRuntime = rt;   // /lang 重建 agent 时要用
 
-        ChatSession session = new ChatSession(agent);
-        repl(session, tools, root, mode, stdin);
+        SessionHolder holder = new SessionHolder(new ChatSession(buildAgent(rt)));
+        printBanner(demo, args, tools, root, mode);
+        repl(holder, rt, root, stdin);
     }
 
     /**
@@ -96,12 +119,14 @@ public class Shell {
      */
     public static void runOnce(String question, String[] args) throws Exception {
         startupArgs = args;
+        lang = Language.fromArgs(args);
         Path root = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
         ToolRegistry tools = buildTools(root);
         PermissionMode mode = PermissionMode.parse(argValue(args, "--permission"));
-        Agent agent = buildAgent(LlmFactory.create(args), tools, mode, null);
+        Runtime rt = new Runtime(LlmFactory.create(args), tools, mode, null);
+        lastRuntime = rt;
 
-        ChatSession session = new ChatSession(agent);
+        ChatSession session = new ChatSession(buildAgent(rt));
         long start = System.currentTimeMillis();
 
         // 单次模式也开流式：边出边打印，观感好，也方便管道实时看到输出
@@ -126,8 +151,8 @@ public class Shell {
      * 读一行 → 处理 → 打印 → 再读一行。
      * 支持 Ctrl+D（EOF）退出，也支持 /exit /quit。
      */
-    private static void repl(ChatSession session, ToolRegistry tools, Path root,
-                             PermissionMode mode, BufferedReader reader) throws Exception {
+    private static void repl(SessionHolder holder, Runtime rt, Path root,
+                             BufferedReader reader) throws Exception {
         while (true) {
             System.out.print(PROMPT);
             System.out.flush();
@@ -145,10 +170,11 @@ public class Shell {
 
             // 斜杠命令在本地处理，不进模型，省 token 也更可靠
             if (input.startsWith("/")) {
-                if (!handleCommand(input, session, tools, root, mode)) return;
+                if (!handleCommand(input, holder, rt.tools(), root, rt.mode())) return;
                 continue;
             }
 
+            ChatSession session = holder.session;
             long start = System.currentTimeMillis();
             try {
                 // 流式：文字边生成边打印；没有文字增量时（例如纯工具调用）就什么都不打
@@ -170,7 +196,7 @@ public class Shell {
                         session.contextChars(), session.turns());
             } catch (Exception e) {
                 // 单次失败不退出会话，用户可以直接重试或换个说法
-                System.out.println("\n[错误] " + e.getMessage());
+                System.out.println("\n[错误] " + friendlyError(e));
             }
         }
     }
@@ -180,9 +206,10 @@ public class Shell {
      *
      * @return false 表示要退出会话
      */
-    private static boolean handleCommand(String input, ChatSession session,
+    private static boolean handleCommand(String input, SessionHolder holder,
                                          ToolRegistry tools, Path root, PermissionMode mode) {
         String cmd = input.split("\\s+")[0].toLowerCase();
+        ChatSession session = holder.session;
         switch (cmd) {
             case "/exit", "/quit", "/q" -> {
                 System.out.println("再见。本次共 " + session.turns() + " 轮，"
@@ -194,6 +221,7 @@ public class Shell {
                 session.reset();
                 System.out.println("已清空上下文，开始新会话。");
             }
+            case "/lang" -> switchLanguage(input, holder);
             case "/tools" -> {
                 System.out.println("已加载 " + tools.all().size() + " 个工具：");
                 for (Tool t : tools.all()) {
@@ -212,6 +240,36 @@ public class Shell {
             default -> System.out.println("未知命令: " + cmd + "，输入 /help 查看可用命令。");
         }
         return true;
+    }
+
+    /**
+     * /lang：查看或切换回答语言。
+     *
+     * 切换会重建 agent —— 语言约束写在 system 提示词里，换了提示词就必须新开会话，
+     * 否则旧上下文是用另一种语言表述的，摘要和记忆会对不上。
+     */
+    private static void switchLanguage(String input, SessionHolder holder) {
+        String arg = input.length() > "/lang".length() ? input.substring("/lang".length()).strip() : "";
+        if (arg.isEmpty()) {
+            System.out.printf("当前语言：%s（%s）%n", lang.code, lang.label);
+            System.out.println("用法：/lang zh 切换中文，/lang en 切换英文");
+            return;
+        }
+        Language next = Language.parse(arg);
+        if (next == lang) {
+            System.out.println("已经是 " + next.label + " 了。");
+            return;
+        }
+        lang = next;
+        holder.session = new ChatSession(buildAgent(currentRuntime()));
+        System.out.printf("已切换到 %s。因为语言约束写在系统提示词里，上下文已清空、重新开始。%n", next.label);
+    }
+
+    /** 保存最近一次的运行期依赖，供 /lang 重建 agent 用 */
+    private static Runtime lastRuntime;
+
+    private static Runtime currentRuntime() {
+        return lastRuntime;
     }
 
     /**
@@ -327,23 +385,54 @@ public class Shell {
         }
     }
 
-    /** 展示当前生效的模型配置，key 打码 */
+    /** 展示当前生效的模型配置，key 打码。字段名也用中文，避免界面中英混杂 */
     private static void printModel() {
         try {
             // 必须按启动参数解析：否则 mycode --provider=openai 进来后
             // /model 显示的却是 agent.properties 里的 dashscope，误导排查
             LlmFactory.Resolved r = LlmFactory.resolve(startupArgs);
-            System.out.printf("provider : %s%nendpoint : %s%nmodel    : %s%napiKey   : %s%n协议     : %s%n",
+            System.out.printf("服务商 : %s%n接口地址: %s%n模型   : %s%n密钥   : %s%n协议   : %s%n语言   : %s%n",
                     r.provider(), r.endpoint(), r.model(), LlmFactory.mask(r.apiKey()),
-                    r.anthropic() ? "Anthropic Messages" : "OpenAI 兼容");
+                    r.anthropic() ? "Anthropic Messages" : "OpenAI 兼容",
+                    lang.label);
         } catch (Exception e) {
-            System.out.println("配置有误: " + e.getMessage());
+            System.out.println("配置有误：" + friendlyError(e));
         }
+    }
+
+    /**
+     * 把英文异常翻成人话。
+     *
+     * 客户端是中文的，但底层异常信息基本都是英文（HTTP 401、Connection refused…），
+     * 直接抛给用户等于没提示。这里按常见故障给一句中文解释，再附上原始信息便于排查。
+     */
+    private static String friendlyError(Exception e) {
+        String raw = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        String lower = raw.toLowerCase();
+        if (raw.contains("401") || lower.contains("unauthorized") || lower.contains("invalid api key")) {
+            return "模型服务拒绝了请求（401），请检查 agent.properties 里的 apiKey 是否填对。原始信息：" + raw;
+        }
+        if (raw.contains("404") || lower.contains("not found")) {
+            return "接口地址不存在（404），请用 /model 确认 endpoint 是否正确。原始信息：" + raw;
+        }
+        if (raw.contains("429") || lower.contains("rate limit")) {
+            return "请求太频繁或额度用尽（429），稍等一会儿再试。原始信息：" + raw;
+        }
+        if (raw.contains("403") || lower.contains("forbidden")) {
+            return "没有访问权限（403），确认这个 key 是否开通了该模型。原始信息：" + raw;
+        }
+        if (lower.contains("timed out") || lower.contains("timeout")) {
+            return "连接超时，检查网络或代理设置。原始信息：" + raw;
+        }
+        if (lower.contains("unknownhost") || lower.contains("connection refused")) {
+            return "连不上服务器，检查网络或 baseUrl。原始信息：" + raw;
+        }
+        return raw;
     }
 
     private static void printHelp() {
         System.out.println("""
-                用法：直接输入问题，回车发送。需要 agent 动手时会自动调用工具。
+                用法：直接输入问题，回车发送。需要它动手时会自动调用工具。
 
                 斜杠命令（本地执行，不消耗 token）：
                   /help        显示本帮助
@@ -352,6 +441,7 @@ public class Shell {
                   /files       列出当前项目的代码文件
                   /model       查看当前模型配置
                   /permission  查看当前权限模式
+                  /lang        查看或切换回答语言（/lang zh | /lang en）
                   /cost        查看 token 用量与耗时
                   /compress    手动压缩一次上下文（自动压缩默认已开启）
                   /undo        撤销最近一次文件修改（/undo 路径 指定文件）
@@ -363,7 +453,7 @@ public class Shell {
                   所以连改多次也能一层层退回去。语法校验失败的修改会被自动回滚，不占版本。
 
                 记忆压缩说明：
-                  上下文超过阈值（默认 70%）时，最老的几轮对话会被压成一段摘要放进 system，
+                  上下文超过阈值（默认 70%）时，最老的几轮对话会被压成一段摘要放进系统提示词，
                   而不是直接删掉 —— 这样任务意图和已确认的约束能留下来。
                   压缩发生在后台，界面会提示「⇣ 上下文已压缩」。用 --no-compress 可关闭。
 
@@ -409,6 +499,7 @@ public class Shell {
         System.out.println("  模型   " + model);
         System.out.println("  工具   " + tools.all().size() + " 个");
         System.out.println("  权限   " + mode.cli + "（" + mode.label + "）");
+        System.out.println("  语言   " + lang.label + "（/lang 可切换）");
         System.out.println("  目录   " + root);
         System.out.println("  " + "-".repeat(52));
         System.out.println("  直接说话即可，/help 看命令，/exit 退出");
@@ -422,13 +513,21 @@ public class Shell {
      * 钩子顺序有讲究：ConsoleHook 先打「它要调用什么」，PermissionHook 再决定放不放行，
      * 这样用户在被询问之前就知道这行命令是什么来路。
      */
-    private static Agent buildAgent(LlmClient llm, ToolRegistry tools,
-                                    PermissionMode mode, BufferedReader stdin) {
+    /**
+     * 组装 agent：模型 + 工具 + 两个钩子 + 语言约束。
+     *
+     * 钩子顺序有讲究：ConsoleHook 先打「它要调用什么」，PermissionHook 再决定放不放行，
+     * 这样用户在被询问之前就知道这行命令是什么来路。
+     *
+     * 语言约束是拼在 system 末尾的：它在提示词里优先级最高，
+     * 才能压住「工具返回英文就跟着说英文」的惯性。
+     */
+    private static Agent buildAgent(Runtime rt) {
         return Agent.builder("mycode")
-                .llm(llm)
-                .tools(tools)
-                .systemPrompt(SYSTEM_PROMPT)
-                .hooks(new ConsoleHook(), PermissionHook.forMode(mode, stdin))
+                .llm(rt.llm())
+                .tools(rt.tools())
+                .systemPrompt(SYSTEM_PROMPT + "\n" + lang.hint)
+                .hooks(new ConsoleHook(), PermissionHook.forMode(rt.mode(), rt.stdin()))
                 .maxSteps(12)
                 // --no-compress 关掉自动压缩，退回「删最老消息」的旧策略（用于对比效果）
                 .compressionEnabled(!List.of(startupArgs).contains("--no-compress"))
