@@ -330,16 +330,19 @@ public class Shell {
     /**
      * /compress：手动压缩一次上下文。
      *
-     * 自动压缩在每轮开始前按阈值触发，这个命令用于「还没到阈值但我想提前瘦身」，
-     * 也方便观察压缩到底做了什么。
+     * 手动是强制的：不管有没有超阈值，都压到当前体量的一半。
+     * 自动压缩只在超过 70% 时触发（每压一次要花一次模型调用，不能让它在小对话上空跑）。
      */
     private static void compress(ChatSession session) {
         int before = session.contextChars();
+        if (before < 200) {
+            System.out.println("上下文太短了（约 " + before + " 字），没什么可压缩的。");
+            return;
+        }
         try {
             ContextCompressor.Stats stats = session.compressNow();
             if (stats.removedMessages() == 0) {
-                System.out.printf("当前上下文约 %d 字，还没到需要压缩的程度（阈值 %d 字）。%n",
-                        before, session.compressThreshold());
+                System.out.println("没有可以摘掉的历史对话了（只剩当前这一轮，压缩会丢掉你正在问的问题）。");
                 return;
             }
             System.out.printf("已压缩：移除 %d 条消息（%d 轮），约 %d 字 → %d 字%n",
@@ -348,13 +351,18 @@ public class Shell {
             System.out.println("新的历史摘要：");
             System.out.println("  " + session.summary().replace("\n", "\n  "));
         } catch (Exception e) {
-            System.out.println("压缩失败: " + e.getMessage());
+            System.out.println("压缩失败：" + friendlyError(e));
         }
     }
 
     /** 用量与耗时汇总。配了价格才显示金额，否则只报 token */
-    private static void printCost(ChatSession session) {        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
-        System.out.println("上下文   : 约 " + session.contextChars() + " 字");
+    private static void printCost(ChatSession session) {
+        int threshold = session.compressThreshold();
+        int current = session.contextChars();
+        System.out.println("模型用量 : " + Costs.describe(session.totalUsage()));
+        System.out.println("上下文   : 约 " + current + " 字"
+                + (current > threshold ? "（已超过自动压缩阈值）" : ""));
+        System.out.println("压缩阈值 : " + threshold + " 字（超过后每轮开始前自动压缩）");
         System.out.println("轮次     : " + session.turns());
         System.out.println("耗时     : " + session.elapsedSeconds() + " 秒");
         if (!Costs.configured()) {

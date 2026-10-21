@@ -200,10 +200,15 @@ public class Agent {
     /**
      * 立即压缩一次（供 /compress 命令手动触发）。
      *
-     * @return 压缩统计；没到阈值时 removedMessages 为 0
+     * @param force true 表示不管当前有没有超阈值，都压到「当前体量的一半」；
+     *              false 表示按阈值判断（和自动压缩一致）
+     * @return 压缩统计；没有可压内容时 removedMessages 为 0
      */
-    public ContextCompressor.Stats compressNow(AgentContext ctx) {
-        int target = (int) (maxContextTokens * compressRatio);
+    public ContextCompressor.Stats compressNow(AgentContext ctx, boolean force) {
+        int target = force
+                // 强制模式：压到当前的一半，但留个下限，避免把上下文压成一句话
+                ? Math.max(600, ctx.estimateTokens() / 2)
+                : (int) (maxContextTokens * compressRatio);
         ContextCompressor.Stats stats = ContextCompressor.compress(ctx, llm, target, compressKeep);
         if (stats.removedMessages() > 0) {
             lastRunUsage = lastRunUsage.plus(stats.usage());

@@ -67,10 +67,12 @@ public class ChatSession {
 
     /**
      * 手动触发一次上下文压缩（对应 /compress 命令）。
-     * 平时是 agent 自动触发的，手动版用于「感觉它开始忘事了」的时候救急。
+     *
+     * 与自动压缩的区别：手动是「我现在就想瘦身」，所以强制压到当前体量的一半，
+     * 不管有没有超阈值；自动压缩只在超过 70% 时才动手，避免白白多花一次模型调用。
      */
     public ContextCompressor.Stats compressNow() {
-        ContextCompressor.Stats stats = agent.compressNow(ctx);
+        ContextCompressor.Stats stats = agent.compressNow(ctx, true);
         // 摘要调用会花 token，也要计入会话成本
         totalUsage = totalUsage.plus(agent.lastRunUsage());
         return stats;
