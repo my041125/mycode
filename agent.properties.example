@@ -1,0 +1,26 @@
+# ============================================================
+# 模型配置示例
+# 用法：复制本文件为 agent.properties，改成你自己的值即可。
+# 优先级：命令行参数 > 环境变量 > 本文件 > 内置预设
+# 注意：agent.properties 已被 .gitignore 忽略，不会把密钥提交出去。
+# ============================================================
+
+# 服务商：dashscope / openai / deepseek / moonshot / zhipu / ollama / anthropic / custom
+# 用中转服务或私有部署时选 custom
+provider=dashscope
+
+# 接口地址。四种写法都支持，程序会自动补全 /v1/chat/completions：
+#   https://xxx.com
+#   https://xxx.com/v1
+#   https://xxx.com/v1/
+#   https://xxx.com/v1/chat/completions
+baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
+
+# 你的 API Key。填在这里就不用每次改环境变量了
+apiKey=sk-你的key
+
+# 模型名，会覆盖预设的默认模型
+model=qwen3-max
+
+# Claude 等 Anthropic 协议服务才需要，其它可留空或删除
+# maxTokens=4096

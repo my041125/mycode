@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mini-agent：一个从零手写的 Java agent 内核（教学项目）
+
+  设计原则：除 JSON 序列化外不引入任何框架依赖。
+  目的是让人看清 agent 到底由哪些零件组成，而不是再学一套框架 API。
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- 项目坐标：本地运行用，不需要发布到仓库 -->
+  <groupId>miniagent</groupId>
+  <artifactId>mini-agent</artifactId>
+  <version>1.0</version>
+
+  <properties>
+    <!-- JDK 17：因为用到了 record、文本块、switch 表达式、java.net.http -->
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <!-- 源码含中文注释，必须显式声明 UTF-8，否则 Windows 下会按 GBK 读导致乱码 -->
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <!--
+      唯一依赖：只用来序列化和解析 HTTP 报文（JSON）。
+      注意内核层刻意不暴露 Jackson 的类型 —— Tool.parameters() 返回的是普通 Map，
+      将来换成 Fastjson 或 Gson，业务代码一行都不用改。
+    -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.2</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!--
+        exec 插件：支持用 mvn exec:java 直接运行并传入命令行参数，
+        免去手动打 jar 包、拼 classpath 的麻烦。
+        想换入口类时可以临时覆盖：-Dexec.mainClass=miniagent.其他类
+        （注意 XML 注释里不能出现连续两个减号，所以这里不写具体参数示例）
+      -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.2.0</version>
+        <configuration>
+          <!-- 默认入口：所有参数都从这里分发 -->
+          <mainClass>miniagent.Main</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

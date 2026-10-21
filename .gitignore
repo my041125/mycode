@@ -1,0 +1,11 @@
+target/
+.idea/
+*.iml
+.vscode/
+*.log
+
+# 含 API Key，绝对不要提交到 git
+agent.properties
+
+# 代码编辑工具每次修改前自动生成的备份文件
+*.bak
