@@ -2,6 +2,7 @@ package mycode;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
@@ -13,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 /**
  * 命令执行工具 —— 补上编码 agent 最关键的那块拼图。
@@ -94,13 +96,14 @@ public class CommandTool implements Tool {
                 .directory(workDir.toFile())
                 .redirectErrorStream(true);   // stderr 合并进 stdout，模型不用分开看
 
-        // 项目里有虚拟环境就优先用它。
-        // 技能脚本的依赖装在这里（.venv），不能让它们去污染全局 Python，
-        // 但模型只会写 `python xxx.py`，所以只能靠 PATH 顺序把它顶到前面。
-        Path venvBin = workDir.resolve(windows ? ".venv/Scripts" : ".venv/bin");
-        if (Files.isDirectory(venvBin)) {
+        // 把项目内的「自带工具」前置到 PATH。
+        // 两类东西需要它：.venv 里的 python（技能依赖装在这），
+        // 以及 tools/ 下的便携软件（例如 LibreOffice 的 soffice，技能按 PATH 找它）。
+        // 这样做的好处是整套依赖跟着项目走，既不用管理员权限，也不污染系统环境。
+        String extraPath = buildToolPath(windows);
+        if (!extraPath.isEmpty()) {
             String path = pb.environment().getOrDefault("PATH", "");
-            pb.environment().put("PATH", venvBin + File.pathSeparator + path);
+            pb.environment().put("PATH", extraPath + File.pathSeparator + path);
         }
         // Python 默认按系统编码输出，Windows 下是 GBK，中文会乱码
         pb.environment().put("PYTHONIOENCODING", "utf-8");
@@ -161,6 +164,43 @@ public class CommandTool implements Tool {
         synchronized (buffer) {
             return buffer.toString();
         }
+    }
+
+    /**
+     * 组装要前置到 PATH 的目录，用系统分隔符连接。
+     *
+     * 顺序有讲究：虚拟环境排最前，其次是便携软件 —— 同名命令以靠前的为准。
+     *
+     * @return 拼好的路径串；没有可加的目录时返回空串
+     */
+    private String buildToolPath(boolean windows) {
+        List<Path> dirs = new ArrayList<>();
+
+        // 1. 项目虚拟环境
+        Path venvBin = workDir.resolve(windows ? ".venv/Scripts" : ".venv/bin");
+        if (Files.isDirectory(venvBin)) dirs.add(venvBin);
+
+        // 2. 便携软件。LibreOffice 这类安装包解压后是 tools/LibreOffice/program/soffice.exe，
+        //    所以优先找 program 子目录；没有就直接用软件根目录
+        Path toolsDir = workDir.resolve("tools");
+        if (Files.isDirectory(toolsDir)) {
+            try (Stream<Path> stream = Files.list(toolsDir)) {
+                stream.filter(Files::isDirectory).sorted().forEach(sub -> {
+                    Path program = sub.resolve("program");
+                    dirs.add(Files.isDirectory(program) ? program : sub);
+                });
+            } catch (IOException ignore) {
+                // 目录读不了就跳过，不能因为工具目录有问题就把命令执行整死
+            }
+        }
+
+        if (dirs.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (Path d : dirs) {
+            if (sb.length() > 0) sb.append(File.pathSeparator);
+            sb.append(d.toAbsolutePath());
+        }
+        return sb.toString();
     }
 
     /**

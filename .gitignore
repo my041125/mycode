@@ -7,6 +7,10 @@ target/
 # 项目自带的 Python 虚拟环境（技能脚本依赖装在这里）
 .venv/
 
+# 便携软件（LibreOffice 等）与安装包缓存，体积太大不进仓库
+tools/
+downloads/
+
 # 含 API Key，绝对不要提交到 git
 agent.properties
 
