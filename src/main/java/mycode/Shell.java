@@ -74,7 +74,10 @@ public class Shell {
             5. edit_code 会自动做语法校验，如果返回 ERROR 就先读文件再修正，不要盲目重试；
             6. 保持原文件风格：缩进宽度、注释语言、命名习惯都跟原文件走；
             7. 先给结论再给依据，代码位置要具体到文件和方法名（回答语言见文末的语言要求）；
-            8. 没把握的事直说，不要编造文件内容或 API。
+            8. 没把握的事直说，不要编造文件内容或 API；
+            9. 处理 Word/Excel/PPT 这类文件时，第一步就调 use_skill 拿技能正文，
+               不要用 cat/sed 去读 SKILL.md —— use_skill 会一次把正文和附带脚本清单一并给你；
+            10. 能在项目内用 python/node 完成的事就不要绕道外部工具，跑完记得检查产物是否真的生成。
             """;
 
     /**
@@ -566,7 +569,7 @@ public class Shell {
                 // 技能清单拼在语言约束之前，作为能力说明的一部分
                 .systemPrompt(SYSTEM_PROMPT + rt.skills().catalog() + "\n" + lang.hint)
                 .hooks(new ConsoleHook(), PermissionHook.forMode(rt.mode(), rt.stdin()))
-                .maxSteps(12)
+                // 步数用 Agent 的默认值（20，可由 agent.properties 的 maxSteps 覆盖）
                 // --no-compress 关掉自动压缩，退回「删最老消息」的旧策略（用于对比效果）
                 .compressionEnabled(!List.of(startupArgs).contains("--no-compress"))
                 .build();

@@ -11,6 +11,10 @@ target/
 tools/
 downloads/
 
+# 技能用到的 npm 依赖（docx 等），本地安装，不进仓库
+# package.json / package-lock.json 要提交，方便换机器一条命令还原
+node_modules/
+
 # 含 API Key，绝对不要提交到 git
 agent.properties
 

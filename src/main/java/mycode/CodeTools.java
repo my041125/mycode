@@ -43,9 +43,13 @@ public class CodeTools {
                         "endLine", Tool.num("结束行号，默认 startLine+399")),
                         "path"),
                 a -> {
-                    // 1. 路径归一化并校验，禁止跳出项目目录
+                    // 1. 路径归一化并校验：
+                    //    项目目录内随便读；技能目录（项目外）也放行 ——
+                    //    否则模型想读 SKILL.md 会被拒，只能退回 cat/sed，白白浪费好几步
                     Path f = base.resolve(String.valueOf(a.get("path")).replace('\\', '/')).normalize();
-                    if (!f.startsWith(base)) throw new IllegalArgumentException("拒绝访问项目目录之外的路径");
+                    if (!f.startsWith(base) && !isSkillPath(f)) {
+                        throw new IllegalArgumentException("拒绝访问项目目录之外的路径: " + a.get("path"));
+                    }
                     if (!Files.isRegularFile(f)) throw new IllegalArgumentException("文件不存在: " + a.get("path"));
 
                     // 2. 计算要读的行范围，越界要明确报错而不是静默返回空
@@ -76,6 +80,29 @@ public class CodeTools {
                     }
                     return sb.toString();
                 });
+    }
+
+    /**
+     * 判断路径是否落在技能目录内。
+     *
+     * 技能装在 ~/.claude/skills（项目外），但读它是安全的：
+     * 里面只有 SKILL.md 和配套脚本。放行可以避免模型为了看一眼技能正文
+     * 而绕道 run_command 用 cat/sed —— 那既费步数，也绕过了读文件的保护逻辑。
+     */
+    private static boolean isSkillPath(Path f) {
+        List<Path> roots = new ArrayList<>();
+        String home = System.getProperty("user.home");
+        if (home != null) {
+            roots.add(Path.of(home, ".claude", "skills").toAbsolutePath().normalize());
+        }
+        String install = System.getProperty("mycode.home");
+        if (install != null && !install.isBlank()) {
+            roots.add(Path.of(install, "skills").toAbsolutePath().normalize());
+        }
+        for (Path r : roots) {
+            if (f.startsWith(r)) return true;
+        }
+        return false;
     }
 
     /**

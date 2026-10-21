@@ -64,6 +64,13 @@ public class Main {
             CodingDemo.run(args);
             return;
         }
+        // 5. 「参数在前、问题在后」的写法：mycode --provider=openai "看看这个文件"
+        //    所有参数都是 --key=value 形式，所以任何不以 - 开头的参数都可以当成问题
+        List<String> nonFlags = argv.stream().filter(a -> !a.startsWith("-")).toList();
+        if (!nonFlags.isEmpty()) {
+            Shell.runOnce(String.join(" ", nonFlags), args);
+            return;
+        }
         // 5. 显式进交互；--demo 用假模型，不花钱
         if (argv.contains("--shell") || argv.contains("--demo")) {
             Shell.run(args);

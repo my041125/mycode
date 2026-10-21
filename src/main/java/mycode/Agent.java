@@ -242,12 +242,16 @@ public class Agent {
         private String systemPrompt = "你是一个严谨的助手。";
         /** 钩子，默认不挂任何钩子 */
         private List<Hook> hooks = List.of();
-        /** 最大步数，默认 8。一般任务 4~6 步足够，复杂任务再调大 */
-        private int maxSteps = 8;
+        /**
+         * 最大步数，默认 20。
+         * 早期设 8，实测复杂任务（读技能 → 写脚本 → 执行 → 验证）会被切在半路，
+         * 模型还没产出文件就撞上限。可用 agent.properties 的 maxSteps 覆盖。
+         */
+        private int maxSteps = integer(AgentConfig.get("maxSteps"), 20);
         /** 单条工具结果上限，默认 1500 字 */
         private int maxToolOutputChars = 1500;
-        /** 上下文上限，默认 12000 字（约 12k token） */
-        private int maxContextTokens = 12000;
+        /** 上下文上限，默认 12000 字（约 12k token）；agent.properties 的 maxContextTokens 可覆盖 */
+        private int maxContextTokens = integer(AgentConfig.get("maxContextTokens"), 12000);
         /** 是否启用压缩，默认开 */
         private boolean compressionEnabled = true;
         /** 压缩触发比例，默认 70%。可用 agent.properties 的 compressRatio 覆盖 */
