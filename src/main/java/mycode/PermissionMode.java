@@ -14,6 +14,7 @@ import java.util.Locale;
  *   read-only  只能读，不能改文件、不能执行命令（读代码、问问题）
  *   edit       可以改文件；执行命令要逐条确认（默认档，日常够用）
  *   full       全部放行（自己玩的临时目录、或者完全信任的时候）
+ * @author my
  */
 public enum PermissionMode {
 

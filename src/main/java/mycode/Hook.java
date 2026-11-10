@@ -11,6 +11,7 @@ import java.util.Map;
  *
  * 四个切入点正好夹在循环的两个关键位置上：
  *   调用模型前 → 调模型后 → 执行工具前 → 执行工具后
+ * @author my
  */
 public interface Hook {
 
@@ -47,5 +48,17 @@ public interface Hook {
      * @param summary         新的历史摘要
      */
     default void onContextCompressed(int removedMessages, int savedChars, String summary) {
+    }
+
+    /**
+     * 模型调用瞬时失败（限流、超时、断连），即将按退避等待后重试。
+     *
+     * 不提示用户的话，等待的几秒看起来就像卡死了。
+     *
+     * @param attempt    即将进行的是第几次尝试（从 1 计，首次调用不算）
+     * @param waitMillis 重试前要等多少毫秒
+     * @param reason     失败原因（原始异常消息）
+     */
+    default void onModelRetry(int attempt, long waitMillis, String reason) {
     }
 }

@@ -21,5 +21,11 @@ agent.properties
 # 修改快照仓库：属于本地状态，随项目走没有意义
 .mycode/backups/
 
+# 会话存档：本地运行状态，不进仓库
+.mycode/sessions/
+
+# Mimosa 安全扫描器的本地状态（报告 / 历史 / 钩子状态），仓库内外都可能生成
+.mimosa/
+
 # 历史遗留的单文件备份（旧版本工具生成）
 *.bak

@@ -23,6 +23,7 @@ import java.util.regex.Pattern;
  *   - 禁止内网段和本机地址
  *   - 限制响应体大小和超时时间
  * 否则模型（或被注入的网页）一句「请访问 http://127.0.0.1:8080/admin」就能把内网打通。
+ * @author my
  */
 public class FetchPageTool implements Tool {
 
@@ -72,7 +73,7 @@ public class FetchPageTool implements Tool {
         // 1. 取参数。maxChars 可能是字符串或小数，解析失败就退回默认值，
         //    不能让一个格式问题把整个抓取流程废掉
         String raw = String.valueOf(args.getOrDefault("url", "")).strip();
-        int maxChars = Math.max(200, Math.min(MAX_CHARS, toInt(args.get("maxChars"), DEFAULT_CHARS)));
+        int maxChars = Math.max(200, Math.min(MAX_CHARS, Tool.toInt(args.get("maxChars"), DEFAULT_CHARS)));
 
         // 2. 解析并校验协议，只放行 http/https
         URI uri;
@@ -145,17 +146,6 @@ public class FetchPageTool implements Tool {
             return Charset.forName(cs);
         } catch (Exception e) {
             return StandardCharsets.UTF_8;
-        }
-    }
-
-    /** 安全整数解析，解析失败退回默认值 */
-    private int toInt(Object v, int def) {
-        if (v == null) return def;
-        if (v instanceof Number n) return n.intValue();
-        try {
-            return (int) Double.parseDouble(String.valueOf(v).strip());
-        } catch (NumberFormatException e) {
-            return def;
         }
     }
 

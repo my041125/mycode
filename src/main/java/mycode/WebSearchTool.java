@@ -15,6 +15,7 @@ import java.util.Map;
  *
  * 关键认知：搜索是「工具」，不是「模型能力」。
  * 做成工具，条数、超时、缓存、来源全部可控；用模型内置联网，这些都管不了。
+ * @author my
  */
 public class WebSearchTool implements Tool {
 

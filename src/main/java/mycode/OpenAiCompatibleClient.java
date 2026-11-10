@@ -30,6 +30,7 @@ import java.util.Map;
  *   工具声明   tools -> [{type:"function", function:{name, description, parameters}}]
  *   工具调用   assistant 消息里的 tool_calls 数组，每项带 id
  *   结果回填   role:"tool" + tool_call_id
+ * @author my
  */
 public class OpenAiCompatibleClient implements LlmClient {
 
@@ -45,32 +46,19 @@ public class OpenAiCompatibleClient implements LlmClient {
     /** 模型名，例如 gpt-4.1、deepseek-chat、qwen3-max */
     protected final String model;
 
-    /** 额外请求头。用于某些需要自定义头的代理或企业网关 */
-    protected final Map<String, String> extraHeaders;
-
     /** 复用 HttpClient，避免每次调用都重建连接池 */
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(20)).build();
 
-    /** 最简构造：不需要额外请求头时用这个 */
-    public OpenAiCompatibleClient(String endpoint, String apiKey, String model) {
-        this(endpoint, apiKey, model, Map.of());
-    }
-
     /**
-     * 完整构造。
-     *
-     * @param endpoint     完整请求地址
-     * @param apiKey       密钥，可为空（本地服务）
-     * @param model        模型名
-     * @param extraHeaders 额外请求头，没有就传 Map.of()
+     * @param endpoint 完整请求地址（不是 baseUrl）
+     * @param apiKey   密钥，可为空（本地服务如 Ollama）
+     * @param model    模型名
      */
-    public OpenAiCompatibleClient(String endpoint, String apiKey, String model,
-                                  Map<String, String> extraHeaders) {
+    public OpenAiCompatibleClient(String endpoint, String apiKey, String model) {
         this.endpoint = endpoint;
         this.apiKey = apiKey;
         this.model = model;
-        this.extraHeaders = extraHeaders;
     }
 
     /**
@@ -98,7 +86,8 @@ public class OpenAiCompatibleClient implements LlmClient {
                 ObjectNode fn = M.createObjectNode();
                 fn.put("name", t.name());
                 fn.put("description", t.description());
-                fn.set("parameters", M.valueToTree(t.parameters()));
+                // schema 要先 canonical 排序再序列化，保证跨重启字节恒定（见 Tool.canonical）
+                fn.set("parameters", M.valueToTree(Tool.canonical(t.parameters())));
                 ObjectNode wrapper = M.createObjectNode();
                 wrapper.put("type", "function");
                 wrapper.set("function", fn);
@@ -129,7 +118,6 @@ public class OpenAiCompatibleClient implements LlmClient {
         if (apiKey != null && !apiKey.isBlank()) {
             builder.header("Authorization", "Bearer " + apiKey);
         }
-        extraHeaders.forEach(builder::header);
 
         HttpRequest req = builder
                 .POST(HttpRequest.BodyPublishers.ofString(buildRequestJson(ctx, tools)))
@@ -198,7 +186,6 @@ public class OpenAiCompatibleClient implements LlmClient {
         if (apiKey != null && !apiKey.isBlank()) {
             builder.header("Authorization", "Bearer " + apiKey);
         }
-        extraHeaders.forEach(builder::header);
         return http.send(builder.POST(HttpRequest.BodyPublishers.ofString(json)).build(),
                 HttpResponse.BodyHandlers.ofInputStream());
     }
@@ -236,8 +223,21 @@ public class OpenAiCompatibleClient implements LlmClient {
         }
         // 用量在顶层 usage 字段里，取不到就按 0 处理（部分代理会省略这个字段）
         JsonNode u = root.path("usage");
-        Usage usage = new Usage(u.path("prompt_tokens").asInt(0), u.path("completion_tokens").asInt(0));
+        Usage usage = new Usage(u.path("prompt_tokens").asInt(0),
+                u.path("completion_tokens").asInt(0), cachedTokens(u));
         return new ChatResult(text, calls, usage);
+    }
+
+    /**
+     * 从 usage 节点里提取「命中前缀缓存的输入 token 数」。
+     * 同一件事各家字段名不同，在这里统一兼容，SseAccumulator 也复用：
+     *   DeepSeek：usage.prompt_cache_hit_tokens
+     *   OpenAI ：usage.prompt_tokens_details.cached_tokens
+     * 其他厂商不返回该字段时按 0 处理，只影响成本展示，不影响主流程。
+     */
+    static int cachedTokens(JsonNode u) {
+        int hit = u.path("prompt_cache_hit_tokens").asInt(0);
+        return hit > 0 ? hit : u.path("prompt_tokens_details").path("cached_tokens").asInt(0);
     }
 
     /**

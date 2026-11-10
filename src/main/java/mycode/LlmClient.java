@@ -13,6 +13,7 @@ import java.util.List;
  *   OpenAiCompatibleClient —— OpenAI 兼容协议（OpenAI、DeepSeek、Kimi、智谱、通义、Ollama）
  *   AnthropicClient        —— Claude 原生 Messages 协议
  *   ScriptedLlmClient      —— 假模型，用于离线验证循环
+ * @author my
  */
 public interface LlmClient {
 

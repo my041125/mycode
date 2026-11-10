@@ -1,6 +1,10 @@
 package mycode;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +20,7 @@ import java.util.Map;
  *
  * assistant 和随后的 tool 消息必须成对出现：少一条 tool，或 tool_call_id 对不上，
  * 大部分厂商的接口会直接返回 400。这是接真模型时最高频的坑。
+ * @author my
  */
 public class AgentContext {
 
@@ -28,9 +33,50 @@ public class AgentContext {
     /** 历史对话的滚动摘要。每次压缩都会用它覆盖，保证 system 里只有一段摘要而不是越叠越长 */
     private String summary = "";
 
+    /** system 里摘要段的拼接标记，restore 靠它把摘要从持久化的 system 里剥出来 */
+    private static final String SUMMARY_MARKER = "\n\n【此前对话摘要】\n";
+    private static final String SUMMARY_NOTE = "\n（以上是更早对话的压缩摘要，细节可能有丢失，需要时请重新查证。）";
+
     private AgentContext(String systemBase) {
         this.systemBase = systemBase;
         this.messages.add(systemMessage());
+    }
+
+    /**
+     * 从持久化的消息列表恢复上下文（--continue 用）。
+     *
+     * 存档里的第一条 system 可能已经嵌着一段历史摘要（上次会话压缩过），
+     * 必须把它剥出来：systemBase 只装「原始 system」，摘要仍走 setSummary
+     * 这个单一入口 —— 否则下次压缩会在旧摘要上再叠一段，越压越长。
+     *
+     * @param messages 完整消息列表，第一条必须是 system（存档时保证了顺序）
+     */
+    public static AgentContext restore(List<Map<String, Object>> messages) {
+        if (messages.isEmpty() || !"system".equals(messages.get(0).get("role"))) {
+            throw new IllegalArgumentException("会话存档缺少 system 消息，无法恢复");
+        }
+        String systemContent = String.valueOf(messages.get(0).get("content"));
+        String systemBase = systemContent;
+        String summary = "";
+        int at = systemContent.indexOf(SUMMARY_MARKER);
+        if (at >= 0) {
+            systemBase = systemContent.substring(0, at);
+            summary = systemContent.substring(at + SUMMARY_MARKER.length());
+            if (summary.endsWith(SUMMARY_NOTE)) {
+                summary = summary.substring(0, summary.length() - SUMMARY_NOTE.length());
+            }
+        }
+        AgentContext ctx = new AgentContext(systemBase);
+        if (!summary.isBlank()) ctx.setSummary(summary.strip());
+        for (int i = 1; i < messages.size(); i++) {
+            ctx.appendRaw(messages.get(i));
+        }
+        return ctx;
+    }
+
+    /** 追加一条已构造好的消息（--continue 恢复用），信任存档、不做协议校验 */
+    private void appendRaw(Map<String, Object> msg) {
+        messages.add(new LinkedHashMap<>(msg));
     }
 
     /**
@@ -45,14 +91,74 @@ public class AgentContext {
     private Map<String, Object> systemMessage() {
         String text = summary.isBlank()
                 ? systemBase
-                : systemBase + "\n\n【此前对话摘要】\n" + summary
-                + "\n（以上是更早对话的压缩摘要，细节可能有丢失，需要时请重新查证。）";
-        return Map.of("role", "system", "content", text);
+                : systemBase + SUMMARY_MARKER + summary + SUMMARY_NOTE;
+        return msg("system", text);
+    }
+
+    /**
+     * 构造一条字段顺序固定的消息（role 在前，content 在后）。
+     *
+     * 必须用 LinkedHashMap 而不是 Map.of：DeepSeek 的前缀缓存按请求报文的
+     * 字节级前缀匹配，而 Map.of 的遍历顺序每次 JVM 启动都随机（JDK 故意为之），
+     * 一旦重启进程，同一段 system 序列化出来的字段顺序就可能从
+     * {"role":...,"content":...} 变成 {"content":...,"role":...}，
+     * 公共前缀从第一条消息起就对不上，缓存全部未命中。
+     * 固定字段顺序后，重启也仍能命中「工具声明 + system」这段公共前缀。
+     */
+    private static Map<String, Object> msg(String role, String content) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("role", role);
+        m.put("content", content);
+        return m;
     }
 
     /** 追加一条用户消息 */
     public void user(String text) {
-        messages.add(Map.of("role", "user", "content", text));
+        messages.add(msg("user", text));
+    }
+
+    /**
+     * 追加一条带图片的用户消息（--image 用）。
+     *
+     * content 按 OpenAI 协议的块数组形态存：[文字块, 图片块(data URL)]。
+     * OpenAI 兼容客户端把消息原样序列化，直接透传；Anthropic 协议由
+     * AnthropicClient 转换成本它的 content blocks。两家都能吃。
+     *
+     * @param text  说明文字，可为空串
+     * @param image 图片文件（png/jpg/jpeg/gif/webp，不超过 4MB）
+     */
+    public void userWithImage(String text, Path image) throws IOException {
+        if (!Files.isRegularFile(image)) {
+            throw new IllegalArgumentException("图片文件不存在: " + image);
+        }
+        byte[] bytes = Files.readAllBytes(image);
+        if (bytes.length > 4 * 1024 * 1024) {
+            throw new IllegalArgumentException("图片超过 4MB，先压缩再试");
+        }
+        String mediaType = mediaType(image.getFileName().toString().toLowerCase());
+        if (mediaType == null) {
+            throw new IllegalArgumentException(
+                    "不支持的图片格式（支持 png/jpg/jpeg/gif/webp）: " + image.getFileName());
+        }
+        String dataUrl = "data:" + mediaType + ";base64,"
+                + Base64.getEncoder().encodeToString(bytes);
+
+        List<Map<String, Object>> content = List.of(
+                Map.of("type", "text", "text", text == null ? "" : text),
+                Map.of("type", "image_url", "image_url", Map.of("url", dataUrl)));
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("role", "user");
+        m.put("content", content);
+        messages.add(m);
+    }
+
+    /** 扩展名 → MIME 类型；不认识的返回 null */
+    private static String mediaType(String fileName) {
+        if (fileName.endsWith(".png")) return "image/png";
+        if (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) return "image/jpeg";
+        if (fileName.endsWith(".gif")) return "image/gif";
+        if (fileName.endsWith(".webp")) return "image/webp";
+        return null;
     }
 
     /**
@@ -74,9 +180,16 @@ public class AgentContext {
             List<Map<String, Object>> arr = new ArrayList<>();
             for (ToolCall c : calls) {
                 // 注意这里是 OpenAI 的嵌套结构：{id, type, function:{name, arguments}}
-                // 其中 arguments 必须是字符串，不能是对象
-                arr.add(Map.of("id", c.id(), "type", "function",
-                        "function", Map.of("name", c.name(), "arguments", c.argsJson())));
+                // 其中 arguments 必须是字符串，不能是对象。
+                // 内层同样用 LinkedHashMap 固定顺序，理由同 msg()：保前缀缓存的字节稳定
+                Map<String, Object> fn = new LinkedHashMap<>();
+                fn.put("name", c.name());
+                fn.put("arguments", c.argsJson());
+                Map<String, Object> call = new LinkedHashMap<>();
+                call.put("id", c.id());
+                call.put("type", "function");
+                call.put("function", fn);
+                arr.add(call);
             }
             msg.put("tool_calls", arr);
         }
@@ -198,8 +311,7 @@ public class AgentContext {
     public int estimateTokens() {
         int n = 0;
         for (Map<String, Object> m : messages) {
-            Object c = m.get("content");
-            if (c != null) n += c.toString().length();
+            n += contentChars(m.get("content"));
             Object toolCalls = m.get("tool_calls");
             if (toolCalls != null) {
                 // List<Map> 的 toString 已经包含了函数名和参数字符串，长度足够做估算
@@ -207,6 +319,25 @@ public class AgentContext {
             }
         }
         return n;
+    }
+
+    /**
+     * 估算一段 content 的字数。
+     * content 通常是字符串；带图片的消息是块数组 —— 只数文字块：
+     * base64 图片块体积巨大但计费按图片 token 算，按字符估会虚高几百倍，
+     * 会立刻触发错误的压缩与裁剪。
+     */
+    private static int contentChars(Object content) {
+        if (content instanceof List<?> parts) {
+            int n = 0;
+            for (Object p : parts) {
+                if (p instanceof Map<?, ?> b && "text".equals(b.get("type"))) {
+                    n += String.valueOf(b.get("text")).length();
+                }
+            }
+            return n;
+        }
+        return content == null ? 0 : content.toString().length();
     }
 
     /**
@@ -239,16 +370,5 @@ public class AgentContext {
             if (role.equals(m.get("role"))) n++;
         }
         return n;
-    }
-
-    /** 调试用：把上下文按 role 逐条打印出来，每行截到 100 字 */
-    public void dump() {
-        for (Map<String, Object> m : messages) {
-            String role = String.valueOf(m.get("role"));
-            Object content = m.get("content");
-            String s = content == null ? "" : content.toString().replace("\n", " ");
-            if (s.length() > 100) s = s.substring(0, 100) + "...";
-            System.out.printf("    [%-9s] %s%n", role, s);
-        }
     }
 }

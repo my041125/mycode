@@ -17,6 +17,20 @@
   <artifactId>mycode</artifactId>
   <version>1.0</version>
   <name>mycode</name>
+  <description>从零手写的命令行 AI 编程助手：除 JSON 序列化外零框架依赖</description>
+
+  <!-- 许可证与作者信息，会随项目一起发布到 GitHub -->
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <name>my</name>
+    </developer>
+  </developers>
 
   <properties>
     <!-- JDK 17：因为用到了 record、文本块、switch 表达式、java.net.http -->

@@ -7,6 +7,7 @@ package mycode;
  *   title   —— 让模型知道这条讲什么
  *   url     —— 用户要能核实来源，回答里必须能给出链接
  *   snippet —— 摘要，喂给模型的正文，太长会撑爆上下文，由使用方截断
+ * @author my
  */
 public record SearchResult(String title, String url, String snippet) {
 

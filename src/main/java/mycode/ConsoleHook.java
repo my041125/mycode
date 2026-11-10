@@ -9,8 +9,12 @@ import java.util.Map;
  *   ⏺ edit_code(path="samples/TicketService.java", op="replace")
  *     ⎿  已修改 samples/TicketService.java
  *
+ * ⏺ 用橙色强调，⎿ 结果行用暗色 —— 主次分明，扫一眼就知道模型在干什么。
+ * 等待模型时由 Ui 提供动画转圈（✻ 琢磨中…），不再是静态的「⋯ 思考中」。
+ *
  * 与 LoggingHook 的区别：LoggingHook 是给开发调试看的（打印上下文长度、轮次），
  * ConsoleHook 是给用户看的（只展示工具调用和结果），所以刻意去掉了噪音。
+ * @author my
  */
 public class ConsoleHook implements Hook {
 
@@ -20,58 +24,68 @@ public class ConsoleHook implements Hook {
     /** 工具结果最长显示多少字符 */
     private static final int RESULT_MAX = 88;
 
-    /** 等待提示那行的宽度，用于回车擦除 */
-    private static final int SPINNER_WIDTH = 24;
-
-    /** 当前轮次 */
-    private int step = 0;
-
-    /** 等待提示是否已经打印出来（打印了才需要擦） */
-    private boolean spinnerShown = false;
-
     /**
-     * 是否在真实终端里。
-     * 输出被重定向到文件或管道时（System.console() 为 null）不打印等待提示，
-     * 否则那串回车擦除字符会留在日志里变成垃圾。
+     * 嵌套深度：0 是主代理（缩进 2 格），子代理是 1（缩进 4 格）。
+     * 子代理的活动多缩一层，扫一眼就能分清哪些是它干的、哪些是主代理干的。
      */
-    private final boolean interactive = System.console() != null;
+    private final int depth;
 
-    /** 调模型前打一个等待提示。模型响应可能好几秒，没提示用户会以为卡死 */
-    @Override
-    public void beforeLlm(AgentContext ctx) {
-        step++;
-        if (!interactive) return;
-        System.out.print(step == 1 ? "  ⋯ 思考中" : "  ⋯ 继续思考");
-        System.out.flush();
-        spinnerShown = true;
+    /** 主代理用默认深度 */
+    public ConsoleHook() {
+        this(0);
     }
 
-    /** 模型回来后把等待提示擦掉，避免和后续输出混在一起 */
+    /** 子代理传 depth=1：同样的符号，多缩进一层 */
+    public ConsoleHook(int depth) {
+        this.depth = depth;
+    }
+
+    /** 调用行缩进：主代理 2 格，每深一层多 2 格 */
+    private String indent() {
+        return "  ".repeat(depth + 1);
+    }
+
+    /** 调模型前启动动画转圈（非交互环境下 Ui 自己会变空操作） */
+    @Override
+    public void beforeLlm(AgentContext ctx) {
+        Ui.startThinking();
+    }
+
+    /** 模型回来后停掉转圈。纯工具调用的轮次（没有文字增量）靠这里收尾 */
     @Override
     public void afterLlm(ChatResult result) {
-        clearSpinner();
+        Ui.stopThinking();
     }
 
     /** 工具调用：打印成 ⏺ 名字(参数=值) 的形式 */
     @Override
     public boolean beforeTool(String name, Map<String, Object> args) {
-        clearSpinner();
-        System.out.println("  ⏺ " + name + "(" + renderArgs(args) + ")");
+        Ui.stopThinking();
+        System.out.println(indent() + Ui.accent("⏺ ") + name + "(" + renderArgs(args) + ")");
         return true;
     }
 
     /** 工具结果：接在调用下面，第一行即可，太长截断 */
     @Override
     public void afterTool(String name, String result) {
-        String first = firstLine(result);
-        System.out.println("    ⎿  " + first);
+        System.out.println(indent() + "  " + Ui.dim("⎿ " + firstLine(result)));
     }
 
     /** 压缩发生时明确告诉用户：记忆被改写了，别让它悄悄发生 */
     @Override
     public void onContextCompressed(int removedMessages, int savedChars, String summary) {
-        clearSpinner();
-        System.out.printf("  ⇣ 上下文已压缩：移除 %d 条消息，省下约 %d 字%n", removedMessages, savedChars);
+        Ui.stopThinking();
+        System.out.println(indent() + Ui.dim("⇣ 上下文已压缩：移除 " + removedMessages + " 条消息，省下约 " + savedChars + " 字"));
+    }
+
+    /** 重试前如实播报，不然等待退避的几秒看起来像卡死 */
+    @Override
+    public void onModelRetry(int attempt, long waitMillis, String reason) {
+        Ui.stopThinking();
+        String msg = reason == null ? "" : reason.replace("\n", " ").strip();
+        if (msg.length() > 60) msg = msg.substring(0, 60) + "…";
+        System.out.println(indent() + Ui.dim("↻ 模型调用失败，" + (waitMillis / 1000) + " 秒后重试（第 "
+                + attempt + " 次）：" + msg));
     }
 
     /** 把参数渲染成 键="值" 一行，超长就截断并加省略号 */
@@ -102,13 +116,5 @@ public class ConsoleHook implements Hook {
             }
         }
         return "(无输出)";
-    }
-
-    /** 用回车擦掉等待提示 */
-    private void clearSpinner() {
-        if (!spinnerShown) return;
-        System.out.print("\r" + " ".repeat(SPINNER_WIDTH) + "\r");
-        System.out.flush();
-        spinnerShown = false;
     }
 }

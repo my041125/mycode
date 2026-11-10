@@ -15,6 +15,7 @@ import java.util.Map;
  * 参数说明：
  *   name / description / parameters 直接对应 Tool 接口的三个方法
  *   handler 是一个函数式接口，抛出的异常由 ToolRegistry 统一兜住
+ * @author my
  */
 public record SimpleTool(String name, String description, Map<String, Object> parameters, Handler handler)
         implements Tool {

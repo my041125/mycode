@@ -7,6 +7,7 @@ import java.util.List;
  *
  * 注意 search 签名里的 topK：结果条数必须由调用方（WebSearchTool）决定，
  * 绝不能让模型自己传 —— 模型要 50 条的时候，上下文基本就废了。
+ * @author my
  */
 public interface SearchProvider {
 

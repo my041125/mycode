@@ -16,13 +16,9 @@ import java.util.List;
  * @param text      模型输出的文字，可能为 null
  * @param toolCalls 模型要求的工具调用，可能为空列表
  * @param usage     本轮 token 用量，拿不到时为 Usage.ZERO
+ * @author my
  */
 public record ChatResult(String text, List<ToolCall> toolCalls, Usage usage) {
-
-    /** 兼容旧写法：不关心用量的地方可以只传两个参数 */
-    public ChatResult(String text, List<ToolCall> toolCalls) {
-        this(text, toolCalls, Usage.ZERO);
-    }
 
     /** 构造「纯文本回答」结果 */
     public static ChatResult ofText(String text) {
@@ -37,10 +33,5 @@ public record ChatResult(String text, List<ToolCall> toolCalls, Usage usage) {
     /** 这一轮有没有工具调用 —— 主循环靠它决定是继续还是收工 */
     public boolean hasToolCalls() {
         return toolCalls != null && !toolCalls.isEmpty();
-    }
-
-    /** 带上用量信息，返回新实例（record 不可变，只能换一个） */
-    public ChatResult withUsage(Usage u) {
-        return new ChatResult(text, toolCalls, u == null ? Usage.ZERO : u);
     }
 }

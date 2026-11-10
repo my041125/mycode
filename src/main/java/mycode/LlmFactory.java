@@ -12,6 +12,7 @@ import java.util.Arrays;
  *   4. 内置预设     见下面的 Provider 枚举
  *
  * 最常见的用法：在 agent.properties 里填三行，然后 run.bat --real 就行了。
+ * @author my
  */
 public class LlmFactory {
 

@@ -17,6 +17,7 @@ import java.util.Map;
  * 部分严格要求一致性的服务商会因此报错。args 只是给本地代码用的便利视图。
  *
  * 注：原先放在本文件里的 ChatResult 已独立为 ChatResult.java，并升级为 public。
+ * @author my
  */
 public record ToolCall(String id, String name, String argsJson, Map<String, Object> args) {
 }

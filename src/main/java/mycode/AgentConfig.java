@@ -18,6 +18,7 @@ import java.util.Map;
  *   baseUrl=https://dashscope.aliyuncs.com/compatible-mode/v1
  *   apiKey=sk-xxxxxxxx
  *   model=qwen3-max
+ * @author my
  */
 public class AgentConfig {
 

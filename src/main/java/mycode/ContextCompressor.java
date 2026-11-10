@@ -19,6 +19,7 @@ import java.util.Map;
  *      「assistant 说要调工具、tool 结果却被删了」的协议违规；
  *   2. 摘要覆盖写进 system 的固定段落，而不是再追加一条消息，避免越压越长；
  *   3. 摘要调用失败（离线假模型、网络问题）时退回机械摘要，保证流程不中断。
+ * @author my
  */
 public class ContextCompressor {
 
@@ -52,6 +53,7 @@ public class ContextCompressor {
 
             只保留这些内容：
             - 用户的目标与已确认的约束（尤其是否定性的要求，例如「不要改注释」）
+            - 用户在对话中给过的纠偏与明确偏好（例如回答语言、代码风格、工具选择）
             - 已经查证过的事实与结论（例如某文件某方法的行为）
             - 已做过的修改及其位置
             - 尚未完成的事项
@@ -148,13 +150,28 @@ public class ContextCompressor {
     /**
      * 把消息渲染成摘要器能读的文本。
      * 单条内容截断到 400 字：摘要只需要知道「聊了什么」，不需要原样复现大段代码。
+     * 带图片的消息是块数组：只取文字块 —— base64 图片块体积巨大且摘要器读不懂，
+     * 原样塞进去等于把一次摘要请求撑爆，用「[图片]」占位即可。
      */
     private static String render(List<Map<String, Object>> messages) {
         StringBuilder sb = new StringBuilder();
         for (Map<String, Object> m : messages) {
             String role = String.valueOf(m.get("role"));
             Object content = m.get("content");
-            String text = content == null ? "" : String.valueOf(content).replace("\n", " ").strip();
+            String text;
+            if (content instanceof List<?> parts) {
+                StringBuilder onlyText = new StringBuilder();
+                for (Object p : parts) {
+                    if (p instanceof Map<?, ?> b && "text".equals(b.get("type"))) {
+                        if (onlyText.length() > 0) onlyText.append(' ');
+                        onlyText.append(b.get("text"));
+                    }
+                }
+                text = onlyText.length() == 0 ? "[图片]" : onlyText.toString();
+            } else {
+                text = content == null ? "" : String.valueOf(content);
+            }
+            text = text.replace("\n", " ").strip();
             if (text.length() > 400) text = text.substring(0, 400) + "…";
             sb.append("- ").append(label(role)).append(": ").append(text).append('\n');
 

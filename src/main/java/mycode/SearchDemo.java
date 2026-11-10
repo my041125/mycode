@@ -15,6 +15,7 @@ import java.util.Map;
  *   set BOCHA_API_KEY=sk-xxx                                   国内中文搜索，推荐
  *   set TAVILY_API_KEY=tvly-xxx                                备选
  *   mvn -q exec:java -Dexec.args="--search --real"             真联网
+ * @author my
  */
 public class SearchDemo {
 

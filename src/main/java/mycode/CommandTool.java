@@ -13,7 +13,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
@@ -27,6 +29,7 @@ import java.util.stream.Stream;
  *   1. CommandPolicy 判定危险命令，直接拒绝
  *   2. PermissionHook 在 EDIT 模式下要求人工确认（本类只管执行，不管审批）
  *   3. 超时强杀 + 输出截断，防止一条卡死的命令把整个会话拖死
+ * @author my
  */
 public class CommandTool implements Tool {
 
@@ -41,6 +44,16 @@ public class CommandTool implements Tool {
 
     /** 执行命令的工作目录 */
     private final Path workDir;
+
+    /** 一个后台任务的登记信息 */
+    record BackgroundTask(String id, Process process, Path logFile, long startedAtMillis) {
+    }
+
+    /** 后台任务登记表。TaskOutputTool 查询时要用，包内可见 */
+    private static final Map<String, BackgroundTask> BACKGROUND = new ConcurrentHashMap<>();
+
+    /** 后台任务 id 发号器：b1、b2、b3… */
+    private static final AtomicInteger NEXT_BACKGROUND_ID = new AtomicInteger(1);
 
     public CommandTool(Path workDir) {
         this.workDir = workDir.toAbsolutePath().normalize();
@@ -61,15 +74,18 @@ public class CommandTool implements Tool {
                 3. 危险命令（删除、格式化、强制推送等）会被直接拒绝，不要尝试绕过；
                 4. 命令默认 30 秒超时，安装依赖这类耗时操作请显式传 timeoutSeconds；
                 5. 项目根目录如果有 .venv，python 会自动指向其中的解释器（技能依赖装在那里），
-                   所以直接写 python xxx.py 就行，不用拼绝对路径。
+                   所以直接写 python xxx.py 就行，不用拼绝对路径；
+                6. 编译、测试、起服务这类长命令传 background=true 放到后台跑，会立即返回任务 id，
+                   之后用 task_output 查询状态和输出，不要让会话干等。
                 """;
     }
 
     @Override
     public Map<String, Object> parameters() {
         return Tool.schema(Map.of(
-                "command", Tool.str("要执行的命令，例如 mvn -q compile"),
-                "timeoutSeconds", Tool.num("超时秒数，默认 30，最大 120")),
+                        "command", Tool.str("要执行的命令，例如 mvn -q compile"),
+                        "timeoutSeconds", Tool.num("超时秒数，默认 30，最大 120（仅前台模式生效）"),
+                        "background", Tool.str("true 表示后台执行，立即返回任务 id；默认前台")),
                 "command");
     }
 
@@ -84,7 +100,9 @@ public class CommandTool implements Tool {
         }
 
         int timeout = Math.max(1, Math.min(MAX_TIMEOUT_SECONDS,
-                toInt(args.get("timeoutSeconds"), DEFAULT_TIMEOUT_SECONDS)));
+                Tool.toInt(args.get("timeoutSeconds"), DEFAULT_TIMEOUT_SECONDS)));
+        boolean background = "true".equalsIgnoreCase(
+                String.valueOf(args.getOrDefault("background", "false")));
 
         boolean windows = System.getProperty("os.name").toLowerCase().contains("win");
         List<String> cmdline = windows
@@ -107,6 +125,11 @@ public class CommandTool implements Tool {
         }
         // Python 默认按系统编码输出，Windows 下是 GBK，中文会乱码
         pb.environment().put("PYTHONIOENCODING", "utf-8");
+
+        // 后台分支：命令已过策略检查、环境已就绪，只差「不等待、输出进日志」
+        if (background) {
+            return launchBackground(command, pb);
+        }
 
         Process process = pb.start();
 
@@ -159,6 +182,30 @@ public class CommandTool implements Tool {
         return sb.toString();
     }
 
+    /**
+     * 后台启动：输出重定向到日志文件，登记任务表，立即返回任务 id。
+     * 命令与环境由调用方（execute）准备好并过了策略检查，这里只做
+     * 「重定向 + 登记 + 不等待」。任务随会话存在，mycode 退出时 JVM 带走子进程。
+     */
+    private String launchBackground(String command, ProcessBuilder pb) throws IOException {
+        String id = "b" + NEXT_BACKGROUND_ID.getAndIncrement();
+        Path logDir = workDir.resolve(".mycode").resolve("runs");
+        Files.createDirectories(logDir);
+        Path logFile = logDir.resolve(id + ".log");
+
+        Process process = pb.redirectOutput(ProcessBuilder.Redirect.to(logFile.toFile())).start();
+        BACKGROUND.put(id, new BackgroundTask(id, process, logFile, System.currentTimeMillis()));
+
+        return "已在后台启动: " + command + "\n"
+                + "任务 id: " + id + " | 日志: .mycode/runs/" + id + ".log\n"
+                + "用 task_output 工具查询运行状态与输出。";
+    }
+
+    /** 按任务 id 查后台任务，供 TaskOutputTool 使用；不存在返回 null */
+    static BackgroundTask backgroundTask(String id) {
+        return id == null ? null : BACKGROUND.get(id.strip());
+    }
+
     /** 在锁内取一份输出快照，避免和读线程并发访问 StringBuilder */
     private String snapshot(StringBuilder buffer) {
         synchronized (buffer) {
@@ -203,20 +250,6 @@ public class CommandTool implements Tool {
         return sb.toString();
     }
 
-    /**
-     * 安全的整数解析：模型可能传小数、字符串或者干脆传错类型。
-     * 解析失败时用默认值，而不是让一条命令因为参数格式问题整轮失败。
-     */
-    private int toInt(Object v, int def) {
-        if (v == null) return def;
-        if (v instanceof Number n) return n.intValue();
-        try {
-            return (int) Double.parseDouble(String.valueOf(v).strip());
-        } catch (NumberFormatException e) {
-            return def;
-        }
-    }
-
     /** 读完整个流。命令输出可能很长，先全收再统一截断，避免边读边丢导致上下文断片 */
     private byte[] readAll(InputStream in) throws Exception {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -232,8 +265,9 @@ public class CommandTool implements Tool {
      * 解码输出。
      * Windows 下 cmd 和多数 Java 工具按 GBK 输出，但有些现代工具用 UTF-8，
      * 所以先严格试 UTF-8，失败再退回 GBK —— 和 CodeFile 用的是同一套思路。
+     * 包内可见：TaskOutputTool 读后台日志用同一个解码规则。
      */
-    private String decode(byte[] bytes) {
+    static String decode(byte[] bytes) {
         try {
             return StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)

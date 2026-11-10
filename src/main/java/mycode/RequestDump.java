@@ -14,6 +14,7 @@ import java.util.Map;
  *   2. 两条并行工具结果有没有被合并成一条 user 消息（Anthropic 的硬性要求）
  *
  *   mvn -q exec:java -Dexec.args="--dump"
+ * @author my
  */
 public class RequestDump {
 

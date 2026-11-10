@@ -11,6 +11,7 @@ import java.util.List;
  *
  * 真实项目里应该把它做成「录制回放」：把线上真实响应录下来，
  * 每次改完代码跑一遍，确认 agent 的最终回答没变差。
+ * @author my
  */
 public class MockSearchProvider implements SearchProvider {
 

@@ -11,6 +11,7 @@ import java.util.Map;
  *   一个技能正文动辄十几 KB（pptx 那份 238 行），全塞进去每次请求都要付费；
  *   做成工具后，只有真正用到时才加载，模型自己判断"这个话题跟 docx 有关"。
  *   这就是 Agent Skills 规范里的「渐进披露」。
+ * @author my
  */
 public class SkillTool implements Tool {
 

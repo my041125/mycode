@@ -20,6 +20,7 @@ import java.util.Locale;
  * 而这类问题应该让模型按上下文自己处理；这里只保证「括号、分号、语法结构没写坏」。
  *
  * 非 Java 文件不做语法校验，只做括号与引号的平衡检查。
+ * @author my
  */
 public class JavaSyntaxCheck {
 

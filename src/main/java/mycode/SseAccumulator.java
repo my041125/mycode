@@ -20,6 +20,7 @@ import java.util.function.Consumer;
  *
  * 把这段逻辑单独抽出来，是为了能脱离网络做单元测试：
  * 喂几段假 JSON 进去，断言拼出来的结果对不对。
+ * @author my
  */
 public class SseAccumulator {
 
@@ -71,7 +72,9 @@ public class SseAccumulator {
         // 1. 用量：通常只在最后一个 chunk 出现
         JsonNode u = root.path("usage");
         if (u.isObject()) {
-            usage = new Usage(u.path("prompt_tokens").asInt(0), u.path("completion_tokens").asInt(0));
+            // 缓存命中数也要从流里捞出来：DeepSeek 的流式 usage 同样带 prompt_cache_hit_tokens
+            usage = new Usage(u.path("prompt_tokens").asInt(0),
+                    u.path("completion_tokens").asInt(0), OpenAiCompatibleClient.cachedTokens(u));
         }
 
         JsonNode choices = root.path("choices");

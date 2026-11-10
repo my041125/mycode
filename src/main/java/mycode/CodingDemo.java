@@ -20,6 +20,7 @@ import java.util.Map;
  *
  * 背后的 agent 只有三个工具：list_files → read_code → edit_code。
  * 没有 read_code 就一定改不对，这是代码类 agent 和聊天类 agent 最大的区别。
+ * @author my
  */
 public class CodingDemo {
 
@@ -58,8 +59,8 @@ public class CodingDemo {
             return;
         }
 
-        String instruction = argValue(args, "--code");
-        String file = argValue(args, "--file");
+        String instruction = Shell.argValue(args, "--code");
+        String file = Shell.argValue(args, "--file");
 
         LlmClient llm = LlmFactory.create(args);
         Agent agent = buildAgent(root, llm);
@@ -166,17 +167,6 @@ public class CodingDemo {
 
         Agent agent = buildAgent(root, llm);
         runOnce(agent, "让 total 方法支持儿童半价，保持现有代码风格", SAMPLE_PATH);
-    }
-
-    /** 从 --name=value 形式的参数里取值，取不到返回 null */
-    private static String argValue(String[] args, String name) {
-        for (String a : args) {
-            if (a.startsWith(name + "=")) {
-                String v = a.substring(name.length() + 1).strip();
-                if (!v.isEmpty()) return v;
-            }
-        }
-        return null;
     }
 
     /** 演示类，禁止实例化 */

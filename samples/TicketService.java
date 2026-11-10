@@ -2,6 +2,7 @@ package samples;
 
 /**
  * 门票计价示例，供代码编辑能力演示使用。
+ * @author my
  */
 public class TicketService {
 

@@ -24,6 +24,7 @@ import java.util.List;
  * 报文要点：
  *   请求  POST /v1/web-search  {"query":..., "summary":true, "count":N}
  *   响应  data.webPages.value[] 里每个元素含 name / url / snippet / summary
+ * @author my
  */
 public class BochaSearchProvider implements SearchProvider {
 

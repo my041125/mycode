@@ -1,6 +1,9 @@
 package mycode;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * 内核部件 1：工具。
@@ -13,6 +16,7 @@ import java.util.Map;
  *
  * 设计上刻意让 parameters() 返回普通 Map，不暴露任何 JSON 库的类型，
  * 这样内核层就不绑定 Jackson（换 Fastjson / Gson 也不用改这一层）。
+ * @author my
  */
 public interface Tool {
 
@@ -40,6 +44,17 @@ public interface Tool {
      */
     String execute(Map<String, Object> args) throws Exception;
 
+    /**
+     * 本工具单条结果允许的最大字符数，0 表示用 Agent 的全局默认。
+     *
+     * 绝大多数工具不需要覆盖。需要覆盖的典型是 task：它返回的是子代理
+     * 精炼后的最终交付物（而不是一条原始命令输出），按全局默认截断会把
+     * 结论砍成半截话，主代理拿到后没法续接任务。
+     */
+    default int resultCharLimit() {
+        return 0;
+    }
+
     // ---------------- 便捷构造：省去手写 schema 的样板代码 ----------------
 
     /**
@@ -60,5 +75,46 @@ public interface Tool {
     /** 定义一个数值参数（整数和小数都用它，模型对 number 的支持最好） */
     static Map<String, Object> num(String desc) {
         return Map.of("type", "number", "description", desc);
+    }
+
+    /**
+     * 递归把 schema 里的所有 Map 换成按 key 排序的 TreeMap，List 逐项递归。
+     *
+     * 为什么需要它：工具声明位于请求报文的最前端，而 DeepSeek 的前缀缓存按
+     * 字节精确匹配。schema 大多用 Map.of 构建，其遍历顺序每次 JVM 启动都随机，
+     * 进程一重启，同一份工具声明序列化出来字段顺序就变了，缓存从第一个字节起
+     * 全部未命中。统一排序后，无论工具怎么声明 schema，序列化字节都恒定，
+     * 重启后「工具声明 + system」这段公共前缀仍能命中缓存。
+     * 排序只是换了字段出现顺序，JSON Schema 语义不受影响。
+     */
+    static Object canonical(Object node) {
+        if (node instanceof Map<?, ?> m) {
+            Map<String, Object> out = new TreeMap<>();
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                out.put(String.valueOf(e.getKey()), canonical(e.getValue()));
+            }
+            return out;
+        }
+        if (node instanceof List<?> l) {
+            List<Object> out = new ArrayList<>();
+            for (Object o : l) out.add(canonical(o));
+            return out;
+        }
+        return node;
+    }
+
+    /**
+     * 把模型给的参数值容错转成 int。
+     * 模型可能传数字、字符串数字或小数，解析不了就用默认值 ——
+     * 不能让一次类型失误废掉整个工具调用。
+     */
+    static int toInt(Object v, int def) {
+        if (v == null) return def;
+        if (v instanceof Number n) return n.intValue();
+        try {
+            return (int) Double.parseDouble(String.valueOf(v).strip());
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 }

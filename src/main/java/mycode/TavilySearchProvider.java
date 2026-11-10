@@ -23,6 +23,7 @@ import java.util.List;
  *   请求  POST /search  {"query":..., "max_results":N, "search_depth":"basic"}
  *   鉴权  Authorization: Bearer tvly-xxx
  *   响应  results[] 里每个元素含 title / url / content
+ * @author my
  */
 public class TavilySearchProvider implements SearchProvider {
 

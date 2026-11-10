@@ -9,6 +9,7 @@ import java.util.Map;
  * 直接能看到：上下文多长了、模型想调哪个工具、参数是什么、工具返回了什么、哪一轮收敛。
  *
  * 生产环境不要用它（每次都打控制台），应该换成写日志文件或上报链路追踪。
+ * @author my
  */
 public class LoggingHook implements Hook {
 

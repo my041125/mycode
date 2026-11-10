@@ -15,6 +15,7 @@ import java.util.List;
  *
  * 一条铁律：锚点必须在文件里唯一。锚点不唯一说明模型给的上下文不够，
  * 这时宁可报错让它重新读文件，也不要猜一个位置改下去 —— 猜错就是灾难。
+ * @author my
  */
 public class CodeEditor {
 

@@ -9,6 +9,7 @@ package mycode;
  *
  * 一个会话 = 一份 AgentContext + 累计轮数 + 起始时间，
  * 顺手提供上下文长度和耗时，方便 /cost、/status 这类命令展示。
+ * @author my
  */
 public class ChatSession {
 
@@ -36,17 +37,24 @@ public class ChatSession {
     }
 
     /**
-     * 提一个问题，返回本轮最终回答。上下文会自动累积。
-     *
-     * @param input 用户输入
-     * @return 最终回答
+     * --continue 恢复会话专用：上下文、轮次与累计用量都从存档来。
+     * 只有走这个构造，恢复后的 /cost、轮次统计才接得上上一次。
      */
-    public String ask(String input) {
-        return ask(input, null);
+    public ChatSession(Agent agent, AgentContext restored, int turns, Usage usage) {
+        this.agent = agent;
+        this.ctx = restored;
+        this.turns = turns;
+        this.totalUsage = usage;
+    }
+
+    /** 把当前会话整体写到存档文件。存档内部吞异常，这里不用再兜 */
+    public void persist(SessionStore store) {
+        store.save(ctx, turns, totalUsage);
     }
 
     /**
-     * 带流式的提问：文字边生成边推给 sink，答案仍然完整返回。
+     * 提一个问题并返回本轮最终回答，上下文自动累积。
+     * 文字边生成边推给 sink（传 null 表示不要流式），答案仍然完整返回。
      *
      * @param input 用户输入
      * @param sink  文本增量回调，null 表示不流式
@@ -56,6 +64,20 @@ public class ChatSession {
         turns++;
         String answer = agent.run(ctx, input, sink);
         // 一次提问可能内部调好几轮模型，这里把整轮消耗一起累计
+        totalUsage = totalUsage.plus(agent.lastRunUsage());
+        return answer;
+    }
+
+    /**
+     * 带图片的提问（--image 用）。image 为 null 等价于普通提问。
+     * 图片走多模态通道，是否支持取决于所配模型；不支持时模型服务会报错，
+     * 按普通调用失败如实返回。
+     */
+    public String ask(String input, java.nio.file.Path image, StreamSink sink) {
+        turns++;
+        String answer = image == null
+                ? agent.run(ctx, input, sink)
+                : agent.runWithImage(ctx, input, image, sink);
         totalUsage = totalUsage.plus(agent.lastRunUsage());
         return answer;
     }

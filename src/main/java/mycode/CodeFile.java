@@ -20,6 +20,7 @@ import java.nio.file.Path;
  *
  * 内部统一用 \n 处理，写回时再还原。少做一步，git diff 里就会出现整文件变更，
  * 代码评审时根本看不出你实际改了什么。
+ * @author my
  */
 public class CodeFile {
 

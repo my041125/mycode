@@ -16,6 +16,7 @@ import java.util.function.Function;
  *       List.of(call("call_1", "read_code", Map.of("path", "A.java")),
  *               call("call_2", "edit_code", Map.of("op", "replace", ...))),
  *       ctx -> "改好了")
+ * @author my
  */
 public class ScriptedLlmClient implements LlmClient {
 

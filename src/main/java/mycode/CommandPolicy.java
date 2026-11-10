@@ -16,6 +16,7 @@ import java.util.Locale;
  *
  * 为什么第三档不直接拒绝：命令不可能穷举（构建工具、脚本、自定义 CLI 太多了），
  * 一刀切会让工具变得没用。折中办法是「默认都要问一遍」。
+ * @author my
  */
 public class CommandPolicy {
 

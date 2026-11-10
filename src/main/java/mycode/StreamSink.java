@@ -9,6 +9,7 @@ package mycode;
  * 故意做得极简：只有 onText 一个必需方法。
  * 工具调用不走这里，因为工具调用是「攒完才能执行」的，
  * 边收边执行会拿半个参数去调工具，那是灾难。
+ * @author my
  */
 @FunctionalInterface
 public interface StreamSink {

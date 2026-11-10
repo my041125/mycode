@@ -14,6 +14,7 @@ import java.util.Locale;
  * 「即使上下文是英文，回答也必须是中文」，否则中文客户端会出现中英混杂。
  *
  * 代码标识符、命令输出本身保持原样 —— 那是事实数据，翻译反而会误导。
+ * @author my
  */
 public enum Language {
 

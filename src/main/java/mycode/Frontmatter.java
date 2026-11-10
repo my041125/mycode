@@ -15,6 +15,7 @@ import java.util.Map;
  *   allowed-tools: Read, Write, Edit
  * 不支持的（按「整块跳过」处理，不影响其它字段）：
  *   多行折叠字符串（> 或 |）、嵌套对象、数组用 - 逐行写
+ * @author my
  */
 final class Frontmatter {
 

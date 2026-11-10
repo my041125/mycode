@@ -19,11 +19,15 @@ import java.util.Map;
  * 为什么要把「校验 + 回滚」做进工具而不是交给模型：
  * 模型不会主动验证自己写的东西能不能编译。把校验放在工具里，
  * 改错就会被自动撤销，模型收到 ERROR 后自然会换个写法，这比在提示词里反复强调可靠得多。
+ * @author my
  */
 public class CodeEditTool implements Tool {
 
     /** 差异预览最多显示多少行 */
     private static final int PREVIEW_LIMIT = 26;
+
+    /** 验证报告最多保留多少行。编译报错可能几十屏，模型只需要前段的错误定位 */
+    private static final int VERIFY_REPORT_LINES = 20;
 
     /** 项目根目录（绝对路径、已归一化）。所有文件操作都不允许跳出这个范围 */
     private final Path root;
@@ -31,12 +35,32 @@ public class CodeEditTool implements Tool {
     /** 多版本备份仓库，每次修改前存一份快照，改坏了可以逐步回退 */
     private final BackupStore backups;
 
+    /** 命令执行器。验证命令复用它，危险特征检查（CommandPolicy）随之自动生效 */
+    private final CommandTool runner;
+
+    /**
+     * 编辑成功后自动执行的验证命令，来自 agent.properties 的 verifyCommand
+     * （例如 mvn -q compile）；未配置表示关闭。
+     */
+    private final String verifyCommand;
+
     /**
      * @param root 项目根目录，通常传运行目录
      */
     public CodeEditTool(Path root) {
         this.root = root.toAbsolutePath().normalize();
         this.backups = new BackupStore(this.root);
+        this.runner = new CommandTool(this.root);
+        this.verifyCommand = AgentConfig.get("verifyCommand");
+    }
+
+    /**
+     * 结果字符额度放大到 4000：edit_code 的 observation 含差异预览和验证报告，
+     * 全局默认的 1500 字会把最关键的验证报错截掉，模型反而看不到失败原因。
+     */
+    @Override
+    public int resultCharLimit() {
+        return 4000;
     }
 
     /** 工具名，模型靠它调用 */
@@ -133,13 +157,47 @@ public class CodeEditTool implements Tool {
         }
 
         String rel = root.relativize(file).toString().replace('\\', '/');
-        return "已修改 " + rel + "\n"
+        String observation = "已修改 " + rel + "\n"
                 + "操作: " + op + " | 影响起始行: " + result.startLine() + " | " + result.summary()
                 + " | 编码: " + codeFile.charsetName() + " | 换行: "
                 + ("\r\n".equals(codeFile.eol()) ? "CRLF" : "LF") + "\n"
                 + "校验: " + check.message() + "\n"
                 + "快照: " + root.relativize(snapshot).toString().replace('\\', '/') + "\n"
                 + "差异:\n" + String.join("\n", preview);
+        return verify(observation);
+    }
+
+    /**
+     * 编辑成功后自动跑一次验证命令（agent.properties 的 verifyCommand）。
+     *
+     * 这是把「改完要验证」从提示词约定变成机制（Aider 的核心工作流）：
+     * 编译失败会直接拼进本次 observation，模型下一轮立刻看到报错去修，
+     * 不用等它自己想起来调 run_command。
+     *
+     * 命令只来自用户配置（agent.properties），模型无法指定或修改；
+     * 且经由 CommandTool 执行，CommandPolicy 的危险特征检查自动生效。
+     * 成功时只回一行，报错时带回输出 —— 撑爆 observation 没有意义。
+     */
+    private String verify(String resultText) {
+        if (verifyCommand == null) return resultText;
+        try {
+            String report = runner.execute(Map.of(
+                    "command", verifyCommand, "timeoutSeconds", 120));
+            if (report.contains("退出码: 0 ")) {
+                return resultText + "\n[verify] " + verifyCommand + " 通过";
+            }
+            return resultText + "\n[verify] 失败，输出如下：\n" + head(report, VERIFY_REPORT_LINES);
+        } catch (Exception e) {
+            return resultText + "\n[verify] 验证命令执行失败: " + e.getMessage();
+        }
+    }
+
+    /** 取前 n 行。验证报错的定位信息几乎都在开头 */
+    private static String head(String text, int n) {
+        String[] lines = text.split("\n", -1);
+        if (lines.length <= n) return text;
+        return String.join("\n", java.util.Arrays.copyOfRange(lines, 0, n))
+                + "\n…（后续省略）";
     }
 
     /**

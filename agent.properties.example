@@ -26,9 +26,38 @@ model=qwen3-max
 # 界面文字始终是中文，这个只影响模型怎么回答
 # language=zh
 
+# 界面颜色：auto（默认，按终端自动判断）/ on / off
+# 框线和符号不依赖它，关掉颜色只是少了橙色标题和暗色统计行
+# ansi=auto
+
+# 界面宽度（列）：默认每次画框前实时探测终端窗口大小，自动适配拉伸；
+# 探测不到时按 COLUMNS 环境变量，再不行 80 列。怪终端可在这里强制指定
+# termWidth=100
+
 # 上下文压缩：超过 70% 时把最老的对话压成摘要；压缩时保留最近 4 条消息
 # compressRatio=0.7
 # compressKeep=4
+
+# ---- 子代理（长任务自动拆分）----
+# 主代理遇到可拆开的长任务时，会用 task 工具派给子代理独立执行，只收回最终结论。
+# 定义放 <项目>/.mycode/agents/ 或 ~/.claude/agents/（与 Claude Code 通用），用 /agents 查看。
+# off 可整体关闭该功能
+# subAgents=on
+# 子代理步数上限：派给它的任务应当聚焦，默认比主代理的 maxSteps 收紧
+# subAgentMaxSteps=15
+
+# ---- 可靠性与工作流 ----
+# 模型调用瞬时失败（429/5xx/超时/断连）的自动重试次数，指数退避 1s/2s/4s
+# maxRetries=3
+# 编辑成功后自动执行的验证命令，失败会把报错直接喂回模型修（留空关闭）
+# verifyCommand=mvn -q compile
+# 一轮多个工具调用是否并行执行（子代理并行扇出的基础）
+# parallelTools=on
+
+# ---- MCP 外部工具（可选）----
+# 配置文件是 <项目>/.mycode/mcp.json，格式与 Claude Code 一致：
+#   {"mcpServers": {"名字": {"command": "可执行文件", "args": ["参数"]}}}
+# 配好启动即加载，/tools 里会多出 mcp_<服务>_ 开头的工具
 
 # Claude 等 Anthropic 协议服务才需要，其它可留空或删除
 # maxTokens=4096
@@ -38,3 +67,14 @@ model=qwen3-max
 # 单位是「元 / 千 token」，按你自己服务商的实际价格填，这里不内置价格表。
 # priceInputPerK=0.004
 # priceOutputPerK=0.012
+#
+# 输入实际按两档计费：命中服务商「前缀缓存」的部分便宜得多（DeepSeek 约 1/10），
+# 命中率和省钱额会直接显示在 /cost 里。以 DeepSeek V3.2 系列参考价（以官网为准）为例：
+#   priceInputPerK=0.002       输入（未命中缓存）
+#   priceCacheHitPerK=0.0002   输入（命中缓存）
+#   priceOutputPerK=0.003      输出
+#
+# 提高命中率的做法（本程序已内置）：压缩只在每轮提问前做一次、不在工具循环中途
+# 改写历史；消息字段顺序固定，重启进程后公共前缀仍能命中。
+# 因为命中缓存的输入很便宜，maxContextTokens 可以放心调大 —— 历史越长、前缀越稳，
+# 命中率越高，整体反而更省。

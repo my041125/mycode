@@ -14,6 +14,7 @@ import java.util.stream.Stream;
  * 为什么必须给模型配 read_code：模型看不到磁盘，只能靠工具把原文喂进上下文。
  * 没有它，agent 就会凭「记忆」编造锚点，然后一次都改不对。
  * 这也是代码类 agent 和聊天类 agent 最本质的区别。
+ * @author my
  */
 public class CodeTools {
 
@@ -57,10 +58,10 @@ public class CodeTools {
                     // 遇到 GBK 编码的老项目文件会直接抛 MalformedInputException。
                     // 交给 CodeFile 做编码识别，和写文件时保持同一套判断。
                     List<String> lines = CodeFile.read(f).text().lines().toList();
-                    int from = a.get("startLine") == null ? 1 : Math.max(1, toInt(a.get("startLine")));
+                    int from = Math.max(1, Tool.toInt(a.get("startLine"), 1));
                     int to = a.get("endLine") == null
                             ? from + MAX_READ_LINES - 1
-                            : Math.min(lines.size(), toInt(a.get("endLine")));
+                            : Math.min(lines.size(), Tool.toInt(a.get("endLine"), 1));
                     if (from > lines.size()) {
                         throw new IllegalArgumentException("起始行超出文件长度，文件共 " + lines.size() + " 行");
                     }
@@ -150,16 +151,6 @@ public class CodeTools {
                     }
                     return "共 " + out.size() + " 个文件：\n" + String.join("\n", out);
                 });
-    }
-
-    /** 把模型可能传成字符串或小数的行号统一转成 int；解析失败按 1 处理（即从头读） */
-    private static int toInt(Object v) {
-        if (v instanceof Number n) return n.intValue();
-        try {
-            return (int) Double.parseDouble(String.valueOf(v).strip());
-        } catch (NumberFormatException e) {
-            return 1;
-        }
     }
 
     /** 工具类，禁止实例化 */

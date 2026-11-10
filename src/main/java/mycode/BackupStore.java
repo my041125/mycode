@@ -26,6 +26,7 @@ import java.util.stream.Stream;
  * 目录结构：
  *   .mycode/backups/samples/TicketService.java/20261021-165812-123.bak
  *                    └────── 原始相对路径 ──────┘ └── 时间戳 ──┘
+ * @author my
  */
 public class BackupStore {
 
@@ -117,12 +118,6 @@ public class BackupStore {
         }
     }
 
-    /** 某个文件的全部历史版本，新的在前 */
-    public List<Path> historyOf(Path file) throws IOException {
-        Path dir = backupRoot.resolve(root.relativize(file.toAbsolutePath().normalize()).toString());
-        return listSnapshots(dir);
-    }
-
     /**
      * 全局最近若干条快照，用于 /history 展示。
      *
@@ -178,10 +173,5 @@ public class BackupStore {
         for (int i = KEEP_PER_FILE; i < all.size(); i++) {
             Files.deleteIfExists(all.get(i));
         }
-    }
-
-    /** 快照根目录，展示用 */
-    public Path backupRoot() {
-        return backupRoot;
     }
 }

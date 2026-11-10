@@ -31,6 +31,7 @@ import java.util.Map;
  *
  * 另有一条隐形规则最坑：messages 必须 user/assistant 交替，
  * 模型一次调 3 个工具会产生 3 条结果，必须合并进同一条 user 消息，否则报错。
+ * @author my
  */
 public class AnthropicClient implements LlmClient {
 
@@ -97,7 +98,8 @@ public class AnthropicClient implements LlmClient {
                 ObjectNode fn = M.createObjectNode();
                 fn.put("name", t.name());
                 fn.put("description", t.description());
-                fn.set("input_schema", M.valueToTree(t.parameters()));  // 注意：不是 parameters
+                // schema 排序保证跨重启字节恒定，与 OpenAiCompatibleClient 同一套规则
+                fn.set("input_schema", M.valueToTree(Tool.canonical(t.parameters())));  // 注意：不是 parameters
                 arr.add(fn);
             }
             ObjectNode choice = M.createObjectNode();
@@ -152,9 +154,10 @@ public class AnthropicClient implements LlmClient {
             }
         }
         // stop_reason = tool_use 时表示要执行工具，end_turn 表示说完了。
-        // 用量字段名和 OpenAI 不同：input_tokens / output_tokens
+        // 用量字段名和 OpenAI 不同：input_tokens / output_tokens / cache_read_input_tokens
         JsonNode u = root.path("usage");
-        Usage usage = new Usage(u.path("input_tokens").asInt(0), u.path("output_tokens").asInt(0));
+        Usage usage = new Usage(u.path("input_tokens").asInt(0),
+                u.path("output_tokens").asInt(0), u.path("cache_read_input_tokens").asInt(0));
         return new ChatResult(text.length() == 0 ? null : text.toString(), calls, usage);
     }
 
@@ -205,7 +208,8 @@ public class AnthropicClient implements LlmClient {
                 blocks.add(block);
             } else {
                 outRole = "user";
-                blocks.add(textBlock(m.get("content") == null ? "" : String.valueOf(m.get("content"))));
+                // content 可能是纯文本，也可能是带图片的块数组（--image 存的 OpenAI 形态）
+                appendUserBlocks(m.get("content"), blocks);
             }
 
             if (blocks.isEmpty()) continue;   // Anthropic 不接受空 content
@@ -232,6 +236,45 @@ public class AnthropicClient implements LlmClient {
         b.put("type", "text");
         b.put("text", text);
         return b;
+    }
+
+    /**
+     * user 消息的 content 转成 Anthropic 块。
+     * 纯文本 → 一个 text 块；块数组（OpenAI 形态）逐个转换：
+     * text → text 块，image_url 的 data URL → base64 图片块。
+     */
+    private void appendUserBlocks(Object content, List<Map<String, Object>> blocks) {
+        if (content instanceof List<?> parts) {
+            for (Object o : parts) {
+                if (!(o instanceof Map<?, ?> part)) continue;
+                if ("text".equals(part.get("type"))) {
+                    blocks.add(textBlock(String.valueOf(part.get("text"))));
+                } else if ("image_url".equals(part.get("type"))
+                        && part.get("image_url") instanceof Map<?, ?> urlObj) {
+                    addImageBlock(String.valueOf(urlObj.get("url")), blocks);
+                }
+            }
+            return;
+        }
+        blocks.add(textBlock(content == null ? "" : String.valueOf(content)));
+    }
+
+    /** 把 data:image/png;base64,xxxx 形态的 URL 转成 Anthropic 的图片块；非 base64 的 URL 跳过 */
+    private void addImageBlock(String dataUrl, List<Map<String, Object>> blocks) {
+        final String prefix = "data:";
+        final String marker = ";base64,";
+        if (dataUrl == null || !dataUrl.startsWith(prefix) || !dataUrl.contains(marker)) {
+            return;
+        }
+        int comma = dataUrl.indexOf(marker);
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("type", "base64");
+        source.put("media_type", dataUrl.substring(prefix.length(), comma));
+        source.put("data", dataUrl.substring(comma + marker.length()));
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("type", "image");
+        block.put("source", source);
+        blocks.add(block);
     }
 
     /** tool_use.input 必须是 JSON 对象，不能是字符串 */

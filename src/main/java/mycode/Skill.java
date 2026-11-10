@@ -25,12 +25,8 @@ import java.util.List;
  * @param body        SKILL.md 的正文（不含 frontmatter），激活时才加载
  * @param allowedTools 声明的工具白名单，用于提示可用范围；为空表示不限制
  * @param source      来源标签，例如「个人」「项目」，让用户知道技能从哪来
+ * @author my
  */
 public record Skill(String name, String description, Path dir, String body,
                     List<String> allowedTools, String source) {
-
-    /** 技能目录下 SKILL.md 的相对路径，展示用 */
-    public String skillFile() {
-        return dir.resolve("SKILL.md").toString().replace('\\', '/');
-    }
 }

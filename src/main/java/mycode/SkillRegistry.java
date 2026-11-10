@@ -23,6 +23,7 @@ import java.util.stream.Stream;
  *
  * 渐进披露：启动时只把「名字 + 描述」注入 system（每个约 30~120 字），
  * 模型判断相关时才调 use_skill 把正文读进来。这样装十几个技能也不会撑爆上下文。
+ * @author my
  */
 public class SkillRegistry {
 

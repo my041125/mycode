@@ -19,6 +19,7 @@ import java.util.Map;
  *   mycode --code-demo          代码编辑演示（读文件 → 替换 → 校验 → 出差异）
  *
  * 设计说明：分发逻辑都放在这里，Shell、各 Demo 各管自己的一摊事。
+ * @author my
  */
 public class Main {
 
@@ -71,19 +72,19 @@ public class Main {
             Shell.runOnce(String.join(" ", nonFlags), args);
             return;
         }
-        // 5. 显式进交互；--demo 用假模型，不花钱
+        // 6. 显式进交互；--demo 用假模型，不花钱
         if (argv.contains("--shell") || argv.contains("--demo")) {
             Shell.run(args);
             return;
         }
-        // 6. --mock / --real 是早期门票演示的开关，保留兼容
+        // 7. --mock / --real 是早期门票演示的开关，保留兼容
         if (!argv.contains("--mock") && !argv.contains("--real")) {
             // 只给了 --provider / --base-url / --api-key 这类模型参数，直接进交互模式
             Shell.run(args);
             return;
         }
 
-        // 7. 门票演示场景：有 --real 就接真模型，否则用假模型跑一遍循环
+        // 8. 门票演示场景：有 --real 就接真模型，否则用假模型跑一遍循环
         boolean mock = !argv.contains("--real");
 
         // ---------------- 装配三个演示工具 ----------------
@@ -186,8 +187,22 @@ public class Main {
                   把技能目录放到 <项目>/.mycode/skills/ 或 ~/.claude/skills/ 即可
                   用 /skills 查看已加载的技能；agent.properties 里 skills= 控制启用哪些
 
+                子代理（长任务自动拆分，兼容 Claude Code 的 agents 目录）：
+                  把 <名字>.md 放到 <项目>/.mycode/agents/ 或 ~/.claude/agents/ 即可
+                  frontmatter 写 name/description/tools（可省），正文是它的系统提示词
+                  用 /agents 查看已加载的定义；agent.properties 里 subAgents=off 可关闭
+
+                会话与记忆：
+                  mycode --continue            恢复最近一次会话（每轮问答自动存档）
+                  项目约定写在 <项目>/mycode.md（兼容 AGENTS.md / CLAUDE.md），启动自动加载
+                  mycode --image=截图.png "描述问题"   带图提问（需多模态模型）
+
+                MCP 外部工具：
+                  配置 <项目>/.mycode/mcp.json（格式与 Claude Code 一致）即自动加载
+
                 交互模式里的斜杠命令：
-                  /help  /clear  /tools  /skills  /files  /model  /permission  /lang  /cost  /compress  /undo  /history  /exit
+                  /help  /clear  /tools  /skills  /agents  /memory  /todo  /files  /model
+                  /permission  /lang  /cost  /compress  /undo  /history  /exit
 
                 【权限】决定 agent 能做什么，默认 edit
                   mycode --permission=read-only   只读：不能改文件、不能执行命令
